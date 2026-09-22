@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# 验证脚本的截图产物（scripts/verify.mjs 默认写这里）
+.cache/
+shot-*.png
+probe-*.png
+
+# 数据快照：来自真实工程（带工程名/轨道名），不入库。
+# 想跑前端验证就自己生成一份：
+#   python scripts/make-fixture.py <你的工程.cpr|.flp>
+web/project.json
+scripts/fixture-project.json
+scripts/fixture-project-fl.json
+
+# run.bat 的本地默认工程路径（每台机器不一样）
+default-project.txt

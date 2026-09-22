@@ -1,0 +1,767 @@
+{
+ "meta": {
+  "host": "demo",
+  "hostVersion": "1.0",
+  "projectName": "dawview 示例工程",
+  "bpm": 120.0,
+  "timeSig": [
+   4,
+   4
+  ],
+  "ppq": 480,
+  "sampleRate": 48000
+ },
+ "tempoMap": [
+  [
+   0,
+   120.0
+  ]
+ ],
+ "markers": [
+  [
+   0,
+   "前奏"
+  ],
+  [
+   7680,
+   "主歌"
+  ],
+  [
+   15360,
+   "副歌"
+  ]
+ ],
+ "tracks": [
+  {
+   "id": "t0",
+   "name": "钢琴",
+   "kind": "midi",
+   "clips": [
+    {
+     "id": "c0",
+     "name": "和弦 1",
+     "kind": "midi",
+     "startTick": 0,
+     "lengthTick": 3840,
+     "notes": [
+      {
+       "startTick": 0,
+       "lengthTick": 900,
+       "pitch": 48,
+       "velocity": 96
+      },
+      {
+       "startTick": 0,
+       "lengthTick": 900,
+       "pitch": 55,
+       "velocity": 90
+      },
+      {
+       "startTick": 0,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 960,
+       "lengthTick": 900,
+       "pitch": 44,
+       "velocity": 96
+      },
+      {
+       "startTick": 960,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 90
+      },
+      {
+       "startTick": 960,
+       "lengthTick": 900,
+       "pitch": 60,
+       "velocity": 84
+      },
+      {
+       "startTick": 1920,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 96
+      },
+      {
+       "startTick": 1920,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 90
+      },
+      {
+       "startTick": 1920,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 2880,
+       "lengthTick": 900,
+       "pitch": 46,
+       "velocity": 96
+      },
+      {
+       "startTick": 2880,
+       "lengthTick": 900,
+       "pitch": 53,
+       "velocity": 90
+      },
+      {
+       "startTick": 2880,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 84
+      }
+     ],
+     "audioFile": null
+    },
+    {
+     "id": "c1",
+     "name": "和弦 2",
+     "kind": "midi",
+     "startTick": 3840,
+     "lengthTick": 3840,
+     "notes": [
+      {
+       "startTick": 3840,
+       "lengthTick": 900,
+       "pitch": 48,
+       "velocity": 96
+      },
+      {
+       "startTick": 3840,
+       "lengthTick": 900,
+       "pitch": 55,
+       "velocity": 90
+      },
+      {
+       "startTick": 3840,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 4800,
+       "lengthTick": 900,
+       "pitch": 44,
+       "velocity": 96
+      },
+      {
+       "startTick": 4800,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 90
+      },
+      {
+       "startTick": 4800,
+       "lengthTick": 900,
+       "pitch": 60,
+       "velocity": 84
+      },
+      {
+       "startTick": 5760,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 96
+      },
+      {
+       "startTick": 5760,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 90
+      },
+      {
+       "startTick": 5760,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 6720,
+       "lengthTick": 900,
+       "pitch": 46,
+       "velocity": 96
+      },
+      {
+       "startTick": 6720,
+       "lengthTick": 900,
+       "pitch": 53,
+       "velocity": 90
+      },
+      {
+       "startTick": 6720,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 84
+      }
+     ],
+     "audioFile": null
+    },
+    {
+     "id": "c2",
+     "name": "和弦 3",
+     "kind": "midi",
+     "startTick": 7680,
+     "lengthTick": 3840,
+     "notes": [
+      {
+       "startTick": 7680,
+       "lengthTick": 900,
+       "pitch": 48,
+       "velocity": 96
+      },
+      {
+       "startTick": 7680,
+       "lengthTick": 900,
+       "pitch": 55,
+       "velocity": 90
+      },
+      {
+       "startTick": 7680,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 8640,
+       "lengthTick": 900,
+       "pitch": 44,
+       "velocity": 96
+      },
+      {
+       "startTick": 8640,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 90
+      },
+      {
+       "startTick": 8640,
+       "lengthTick": 900,
+       "pitch": 60,
+       "velocity": 84
+      },
+      {
+       "startTick": 9600,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 96
+      },
+      {
+       "startTick": 9600,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 90
+      },
+      {
+       "startTick": 9600,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 10560,
+       "lengthTick": 900,
+       "pitch": 46,
+       "velocity": 96
+      },
+      {
+       "startTick": 10560,
+       "lengthTick": 900,
+       "pitch": 53,
+       "velocity": 90
+      },
+      {
+       "startTick": 10560,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 84
+      }
+     ],
+     "audioFile": null
+    },
+    {
+     "id": "c3",
+     "name": "和弦 4",
+     "kind": "midi",
+     "startTick": 11520,
+     "lengthTick": 3840,
+     "notes": [
+      {
+       "startTick": 11520,
+       "lengthTick": 900,
+       "pitch": 48,
+       "velocity": 96
+      },
+      {
+       "startTick": 11520,
+       "lengthTick": 900,
+       "pitch": 55,
+       "velocity": 90
+      },
+      {
+       "startTick": 11520,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 12480,
+       "lengthTick": 900,
+       "pitch": 44,
+       "velocity": 96
+      },
+      {
+       "startTick": 12480,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 90
+      },
+      {
+       "startTick": 12480,
+       "lengthTick": 900,
+       "pitch": 60,
+       "velocity": 84
+      },
+      {
+       "startTick": 13440,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 96
+      },
+      {
+       "startTick": 13440,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 90
+      },
+      {
+       "startTick": 13440,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 14400,
+       "lengthTick": 900,
+       "pitch": 46,
+       "velocity": 96
+      },
+      {
+       "startTick": 14400,
+       "lengthTick": 900,
+       "pitch": 53,
+       "velocity": 90
+      },
+      {
+       "startTick": 14400,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 84
+      }
+     ],
+     "audioFile": null
+    },
+    {
+     "id": "c4",
+     "name": "和弦 5",
+     "kind": "midi",
+     "startTick": 15360,
+     "lengthTick": 3840,
+     "notes": [
+      {
+       "startTick": 15360,
+       "lengthTick": 900,
+       "pitch": 48,
+       "velocity": 96
+      },
+      {
+       "startTick": 15360,
+       "lengthTick": 900,
+       "pitch": 55,
+       "velocity": 90
+      },
+      {
+       "startTick": 15360,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 16320,
+       "lengthTick": 900,
+       "pitch": 44,
+       "velocity": 96
+      },
+      {
+       "startTick": 16320,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 90
+      },
+      {
+       "startTick": 16320,
+       "lengthTick": 900,
+       "pitch": 60,
+       "velocity": 84
+      },
+      {
+       "startTick": 17280,
+       "lengthTick": 900,
+       "pitch": 51,
+       "velocity": 96
+      },
+      {
+       "startTick": 17280,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 90
+      },
+      {
+       "startTick": 17280,
+       "lengthTick": 900,
+       "pitch": 63,
+       "velocity": 84
+      },
+      {
+       "startTick": 18240,
+       "lengthTick": 900,
+       "pitch": 46,
+       "velocity": 96
+      },
+      {
+       "startTick": 18240,
+       "lengthTick": 900,
+       "pitch": 53,
+       "velocity": 90
+      },
+      {
+       "startTick": 18240,
+       "lengthTick": 900,
+       "pitch": 58,
+       "velocity": 84
+      }
+     ],
+     "audioFile": null
+    }
+   ]
+  },
+  {
+   "id": "t1",
+   "name": "合成器",
+   "kind": "instrument",
+   "clips": [
+    {
+     "id": "a0",
+     "name": "滤波器截止",
+     "kind": "automation",
+     "startTick": 0,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": null
+    },
+    {
+     "id": "a1",
+     "name": "混响干湿",
+     "kind": "automation",
+     "startTick": 3840,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": null
+    },
+    {
+     "id": "a2",
+     "name": "音高微调",
+     "kind": "automation",
+     "startTick": 7680,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": null
+    },
+    {
+     "id": "a3",
+     "name": "滤波器截止",
+     "kind": "automation",
+     "startTick": 11520,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": null
+    },
+    {
+     "id": "a4",
+     "name": "音量包络",
+     "kind": "automation",
+     "startTick": 15360,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": null
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "name": "贝斯",
+   "kind": "midi",
+   "clips": [
+    {
+     "id": "b0",
+     "name": "贝斯 1",
+     "kind": "midi",
+     "startTick": 0,
+     "lengthTick": 7680,
+     "notes": [
+      {
+       "startTick": 0,
+       "lengthTick": 920,
+       "pitch": 36,
+       "velocity": 104
+      },
+      {
+       "startTick": 960,
+       "lengthTick": 920,
+       "pitch": 36,
+       "velocity": 104
+      },
+      {
+       "startTick": 1920,
+       "lengthTick": 920,
+       "pitch": 32,
+       "velocity": 104
+      },
+      {
+       "startTick": 2880,
+       "lengthTick": 920,
+       "pitch": 32,
+       "velocity": 104
+      },
+      {
+       "startTick": 3840,
+       "lengthTick": 920,
+       "pitch": 39,
+       "velocity": 104
+      },
+      {
+       "startTick": 4800,
+       "lengthTick": 920,
+       "pitch": 39,
+       "velocity": 104
+      },
+      {
+       "startTick": 5760,
+       "lengthTick": 920,
+       "pitch": 34,
+       "velocity": 104
+      },
+      {
+       "startTick": 6720,
+       "lengthTick": 920,
+       "pitch": 34,
+       "velocity": 104
+      }
+     ],
+     "audioFile": null
+    },
+    {
+     "id": "b1",
+     "name": "贝斯 2",
+     "kind": "midi",
+     "startTick": 7680,
+     "lengthTick": 7680,
+     "notes": [
+      {
+       "startTick": 7680,
+       "lengthTick": 920,
+       "pitch": 36,
+       "velocity": 104
+      },
+      {
+       "startTick": 8640,
+       "lengthTick": 920,
+       "pitch": 36,
+       "velocity": 104
+      },
+      {
+       "startTick": 9600,
+       "lengthTick": 920,
+       "pitch": 32,
+       "velocity": 104
+      },
+      {
+       "startTick": 10560,
+       "lengthTick": 920,
+       "pitch": 32,
+       "velocity": 104
+      },
+      {
+       "startTick": 11520,
+       "lengthTick": 920,
+       "pitch": 39,
+       "velocity": 104
+      },
+      {
+       "startTick": 12480,
+       "lengthTick": 920,
+       "pitch": 39,
+       "velocity": 104
+      },
+      {
+       "startTick": 13440,
+       "lengthTick": 920,
+       "pitch": 34,
+       "velocity": 104
+      },
+      {
+       "startTick": 14400,
+       "lengthTick": 920,
+       "pitch": 34,
+       "velocity": 104
+      }
+     ],
+     "audioFile": null
+    },
+    {
+     "id": "b2",
+     "name": "贝斯 3",
+     "kind": "midi",
+     "startTick": 15360,
+     "lengthTick": 3840,
+     "notes": [
+      {
+       "startTick": 15360,
+       "lengthTick": 920,
+       "pitch": 36,
+       "velocity": 104
+      },
+      {
+       "startTick": 16320,
+       "lengthTick": 920,
+       "pitch": 36,
+       "velocity": 104
+      },
+      {
+       "startTick": 17280,
+       "lengthTick": 920,
+       "pitch": 32,
+       "velocity": 104
+      },
+      {
+       "startTick": 18240,
+       "lengthTick": 920,
+       "pitch": 32,
+       "velocity": 104
+      },
+      {
+       "startTick": 19200,
+       "lengthTick": 920,
+       "pitch": 39,
+       "velocity": 104
+      },
+      {
+       "startTick": 20160,
+       "lengthTick": 920,
+       "pitch": 39,
+       "velocity": 104
+      },
+      {
+       "startTick": 21120,
+       "lengthTick": 920,
+       "pitch": 34,
+       "velocity": 104
+      },
+      {
+       "startTick": 22080,
+       "lengthTick": 920,
+       "pitch": 34,
+       "velocity": 104
+      }
+     ],
+     "audioFile": null
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "name": "鼓组",
+   "kind": "audio",
+   "clips": [
+    {
+     "id": "d0",
+     "name": "鼓组循环 1",
+     "kind": "audio",
+     "startTick": 0,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": "drums_loop.wav"
+    },
+    {
+     "id": "d1",
+     "name": "鼓组循环 2",
+     "kind": "audio",
+     "startTick": 3840,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": "drums_loop.wav"
+    },
+    {
+     "id": "d2",
+     "name": "鼓组循环 3",
+     "kind": "audio",
+     "startTick": 7680,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": "drums_loop.wav"
+    },
+    {
+     "id": "d3",
+     "name": "鼓组循环 4",
+     "kind": "audio",
+     "startTick": 11520,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": "drums_loop.wav"
+    },
+    {
+     "id": "d4",
+     "name": "鼓组循环 5",
+     "kind": "audio",
+     "startTick": 15360,
+     "lengthTick": 3840,
+     "notes": [],
+     "audioFile": "drums_loop.wav"
+    }
+   ]
+  },
+  {
+   "id": "t4",
+   "name": "人声",
+   "kind": "audio",
+   "clips": [
+    {
+     "id": "v0",
+     "name": "人声 1",
+     "kind": "audio",
+     "startTick": 3840,
+     "lengthTick": 7680,
+     "notes": [],
+     "audioFile": "vocal_take1.wav"
+    },
+    {
+     "id": "v1",
+     "name": "人声 2",
+     "kind": "audio",
+     "startTick": 11520,
+     "lengthTick": 7680,
+     "notes": [],
+     "audioFile": "vocal_take2.wav"
+    }
+   ]
+  }
+ ],
+ "lengthTicks": 19200,
+ "warnings": [
+  "这是一份手写的合成示例数据，不对应任何真实工程"
+ ]
+}

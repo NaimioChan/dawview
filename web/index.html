@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dawview</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">dawview</div>
+    <div class="proj" id="proj-info">正在载入…</div>
+
+    <div class="spacer"></div>
+
+    <div class="transport">
+      <button id="btn-home" title="回到开头">⏮</button>
+      <button id="btn-play" class="primary" title="播放 / 暂停（空格）">▶</button>
+      <span class="pos" id="pos-label">1.1.0</span>
+    </div>
+
+    <div class="zoom">
+      <button id="btn-zoom-out" title="缩小">−</button>
+      <span id="zoom-label">100%</span>
+      <button id="btn-zoom-in" title="放大">+</button>
+      <button id="btn-fit" title="适应窗口">适应</button>
+    </div>
+
+    <div class="settings">
+      <button id="btn-settings" title="设置（快捷键 ,）">设置</button>
+      <div class="menu" id="settings-menu" hidden>
+        <div class="menu-groups" id="menu-groups"></div>
+        <div class="menu-pane" id="menu-pane"></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="tl-scroll" id="scroll">
+      <div class="tl-spacer" id="spacer"></div>
+      <canvas id="tl"></canvas>
+    </div>
+    <!-- 轨道显示/隐藏选择器：钉在左侧轨道栏的表头格上 -->
+    <div class="tracks-picker" id="tracks-picker">
+      <button id="btn-tracks" title="选择显示哪些轨道（钢琴窗同样生效）">轨道 ▾</button>
+      <div class="track-menu" id="track-menu" hidden>
+        <div class="track-menu-head">
+          <span id="track-menu-count">—</span>
+          <button id="btn-tracks-all" title="全选 / 全不选">全选</button>
+        </div>
+        <!-- 按种类快速筛选（只列出工程里真有的种类） -->
+        <div class="track-menu-filter" id="track-menu-filter"></div>
+        <div class="track-menu-list" id="track-menu-list"></div>
+        <!-- 给显示中的轨道排一条渐变，或一键清除自定色 -->
+        <div class="track-menu-grad" id="track-menu-grad">
+          <span class="lbl">渐变上色</span>
+          <button id="btn-grad-palette" title="沿色卡调色板给显示中的轨道排一条渐变">色卡</button>
+          <button id="btn-grad-rgb" title="按色相环给显示中的轨道排一条渐变（低饱和）">RGB</button>
+          <button id="btn-grad-clear" title="清除显示中轨道的自定色，恢复跟随主题">清除</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 轨道色卡选择器：点轨道头右侧的色卡打开，给这条轨道单独配色 -->
+  <div class="swatch-pop" id="swatch-pop" hidden>
+    <div class="swatch-pop-head">
+      <span class="dot" id="swatch-dot"></span>
+      <span class="nm" id="swatch-name">—</span>
+    </div>
+    <div class="swatch-grid" id="swatch-grid"></div>
+    <div class="swatch-pop-foot">
+      <label title="自己挑一个颜色">自定义
+        <input type="color" id="swatch-custom" value="#3389d1">
+      </label>
+      <button id="swatch-reset" title="恢复成跟随主题的默认色">默认</button>
+    </div>
+  </div>
+
+  <footer class="status">
+    <span id="status-text">—</span>
+    <span class="spacer"></span>
+    <span class="hint">滚轮上下浏览 · Shift+滚轮横向 · Ctrl+滚轮时间缩放 · Alt+滚轮行高 · 点标尺定位 · 点轨道头色卡改轨道颜色 · 轨道 ▾ 里可按种类筛选 / 渐变上色 · 空格播放 · H 干净模式</span>
+  </footer>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <div class="empty" id="empty" hidden>
+    <h1>没有可显示的数据</h1>
+    <p id="empty-msg"></p>
+  </div>
+
+  <script src="webui.js"></script>
+  <script src="theme.js"></script>
+  <script src="timeline.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

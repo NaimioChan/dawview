@@ -1,0 +1,394 @@
+/* dawview —— 清爽简洁走带视图。配色全部走 CSS 变量，主题由 theme.js 切换。 */
+
+:root {
+  --bg:        #0f1720;
+  --panel:     #16212c;
+  --panel-2:   #1b2836;
+  --border:    #263747;
+  --grid:      #1f2e3c;
+  --grid-beat: #182533;
+  --text:      #e8eef5;
+  --muted:     #8ea3b8;
+  --accent:    #3389d1;
+  --clip-midi: #3389d1;
+  --clip-audio:#4fb3a6;
+  --note:      #7cc4f5;
+  --row-h:     44px;
+  --head-w:    200px;
+  --ruler-h:   30px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ---------------------------------------------------------------- 顶栏 */
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.brand { font-weight: 600; letter-spacing: .08em; color: var(--accent); }
+
+.proj { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+.spacer { flex: 1 1 auto; }
+
+.bar button, .bar select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.bar button:hover, .bar select:hover { border-color: var(--accent); }
+.bar button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.transport, .zoom, .settings { display: flex; align-items: center; gap: 6px; }
+.transport .pos { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 66px; text-align: center; }
+.zoom #zoom-label { color: var(--muted); min-width: 46px; text-align: center; }
+
+/* -------------------------------------------------------- 设置（二级菜单） */
+
+.settings { position: relative; }
+#btn-settings.on { border-color: var(--accent); color: var(--accent); }
+
+.menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  min-width: 360px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .45);
+  overflow: hidden;
+}
+.menu[hidden] { display: none; }
+
+.menu-groups {
+  display: flex; flex-direction: column;
+  min-width: 84px;
+  padding: 6px;
+  gap: 2px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+}
+.menu-groups .grp {
+  font: inherit; text-align: left;
+  color: var(--muted);
+  background: transparent;
+  border: 0; border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.menu-groups .grp:hover { color: var(--text); background: var(--panel-2); }
+.menu-groups .grp.on { color: var(--accent); background: var(--panel-2); font-weight: 600; }
+
+.menu-pane { flex: 1 1 auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.menu-pane .pane { display: none; flex-direction: column; gap: 2px; }
+.menu-pane .pane.on { display: flex; }
+.menu-pane .row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 5px 2px;
+  min-height: 30px;
+}
+.menu-pane .row.off { opacity: .45; }
+.menu-pane .row-label { flex: 1 1 auto; color: var(--text); font-size: 12px; white-space: nowrap; }
+.menu-pane .row-ctl { display: flex; align-items: center; gap: 4px; }
+.menu-pane input[type=checkbox] { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.menu-pane .seg {
+  font: inherit; font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.menu-pane .seg:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.menu-pane .seg.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.menu-pane .seg:disabled { cursor: default; opacity: .5; }
+.menu-pane .num { min-width: 46px; text-align: center; color: var(--muted); font-size: 12px; }
+.menu-pane select {
+  font: inherit; font-size: 12px;
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 4px 6px; cursor: pointer;
+}
+.menu-pane input[type=color] {
+  width: 30px; height: 26px; padding: 0;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-2); cursor: pointer;
+}
+
+/* ------------------------------------------------------------ 时间线区 */
+
+.stage { position: relative; flex: 1 1 auto; min-height: 0; }
+
+.tl-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  scrollbar-color: var(--border) transparent;
+}
+.tl-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.tl-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+.tl-scroll::-webkit-scrollbar-track { background: transparent; }
+
+.tl-spacer { position: relative; }
+
+#tl {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: block;
+}
+
+/* -------------------------------------------------------------- 状态栏 */
+
+.status {
+  display: flex;
+  gap: 12px;
+  padding: 5px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.status .hint { opacity: .75; }
+
+/* -------------------------------------------------- 轨道显示/隐藏选择器 */
+
+.tracks-picker {
+  position: absolute;
+  top: 0; left: 0;
+  z-index: 6;
+}
+.tracks-picker[hidden] { display: none; }
+
+#btn-tracks {
+  width: var(--head-w);
+  height: var(--ruler-h);
+  padding: 0 10px;
+  text-align: left;
+  border: 0;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+#btn-tracks:hover { color: var(--text); background: var(--panel-2); }
+#btn-tracks.on { color: var(--accent); }
+
+.track-menu {
+  width: 260px;
+  max-height: 60vh;
+  margin-top: 2px;
+  margin-left: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .45);
+  overflow: hidden;
+}
+.track-menu[hidden] { display: none; }
+
+.track-menu-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.track-menu-head button { padding: 2px 8px; font-size: 11px; }
+
+/* 按种类快速筛选：一排小胶囊，选中高亮 */
+.track-menu-filter {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.kind-chip {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.kind-chip:hover { color: var(--text); border-color: var(--accent); }
+.kind-chip.on {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 渐变上色：给显示中的轨道批量配色 */
+.track-menu-grad {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+}
+.track-menu-grad .lbl { flex: 1 1 auto; }
+.track-menu-grad button {
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.track-menu-grad button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 列表占满剩余高度、自己滚（min-height:0 是关键：不然 flex 子项不肯缩，167 条轨道的工程会把底部按钮顶出面板） */
+.track-menu-list { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 4px; }
+
+.track-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.track-row:hover { background: var(--panel); }
+.track-row input { margin: 0; accent-color: var(--accent); cursor: pointer; }
+.track-row .tn { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.track-row .tk { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+.track-row.off .tn { color: var(--muted); text-decoration: line-through; }
+
+/* ------------------------------------------------------ 轨道色卡选择器 */
+
+.swatch-pop {
+  position: fixed;
+  z-index: 40;
+  width: 208px;
+  padding: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+}
+.swatch-pop[hidden] { display: none; }
+
+.swatch-pop-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 2px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.swatch-pop-head .dot {
+  width: 10px; height: 10px; flex: 0 0 auto;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+.swatch-pop-head .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.swatch-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.swatch-grid button {
+  height: 20px; padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.swatch-grid button:hover { border-color: var(--text); }
+.swatch-grid button.on { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); }
+
+.swatch-pop-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+.swatch-pop-foot label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.swatch-pop-foot input[type=color] {
+  width: 26px; height: 22px; padding: 0;
+  border: 1px solid var(--border); border-radius: 5px;
+  background: var(--panel); cursor: pointer;
+}
+.swatch-pop-foot button {
+  font: inherit; font-size: 11px;
+  color: var(--muted); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 3px 8px; cursor: pointer;
+}
+.swatch-pop-foot button:hover { border-color: var(--accent); color: var(--text); }
+
+/* 轨道选择器里的小色点（只读，表示该轨当前颜色） */
+.track-row .sw {
+  width: 10px; height: 10px; flex: 0 0 auto;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+/* ------------------------------------------------------- 干净模式 / 提示 */
+
+/* 一键隐藏顶栏 + 状态栏（轨道名栏由画布 headW=0 关掉） */
+body.clean .bar, body.clean .status, body.clean .tracks-picker { display: none; }
+/* 轨道栏被关掉时选择器也没地方钉 */
+body.no-heads .tracks-picker { display: none; }
+
+.toast {
+  position: absolute;
+  left: 50%; bottom: 46px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: none;
+  opacity: .95;
+  transition: opacity .4s ease;
+}
+.toast[hidden] { display: none; }
+.toast.fade { opacity: 0; }
+
+.empty {
+  position: absolute;
+  inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 6px; text-align: center;
+  background: var(--bg);
+}
+/* 作者样式里的 display 会盖掉 [hidden] 的 UA 规则 —— 必须显式复位，
+   否则空状态遮罩永远盖在界面上（DOM 里 hidden=true 也照样挡住） */
+.empty[hidden] { display: none; }
+.empty h1 { font-size: 18px; font-weight: 600; margin: 0; }
+.empty p { color: var(--muted); margin: 0; max-width: 60ch; }
