@@ -14,6 +14,27 @@ BARS = 10
 OUT = Path(__file__).resolve().parent.parent / "docs" / "demo-project.json"
 
 
+def cc(num, name, points):
+    """契约里的控制器曲线：points = [[相对片段的 tick, 值 0..127], ...]。"""
+    return {"cc": num, "name": name, "points": points}
+
+
+def mod_wheel(length):
+    """调制轮：片段里来回几次（形状一眼能看出是曲线）。"""
+    n = 8
+    return cc(1, "调制轮", [[round(length * i / n), 100 if i % 2 == 0 else 36]
+                          for i in range(n + 1)])
+
+
+def sustain(length):
+    """延音踏板：每半小节踩一下（0/127 的方波，看阶梯画法正不正）。"""
+    pts = []
+    for i in range(0, length, BAR // 2):
+        pts.append([i, 127])
+        pts.append([i + BAR // 2 - 60, 0])
+    return cc(64, "延音踏板", pts)
+
+
 def notes(chords, clip_start, step=BAR // 2, length=BAR // 2 - 60, vel=96):
     """把和弦列表铺成音符：每 half-bar 一个和弦，三音同时按。"""
     out = []
@@ -24,7 +45,7 @@ def notes(chords, clip_start, step=BAR // 2, length=BAR // 2 - 60, vel=96):
                 "startTick": t,
                 "lengthTick": length,
                 "pitch": pitch,
-                "velocity": max(40, vel - k * 6),
+                "velocity": max(32, vel - k * 26),     # 三个音错开得多一点，力度栏才有起伏
             })
     return out
 
@@ -42,6 +63,7 @@ for i in range(5):
         "startTick": start,
         "lengthTick": 2 * BAR,
         "notes": notes(PROG, start),
+        "controllers": [mod_wheel(2 * BAR), sustain(2 * BAR)],
         "audioFile": None,
     })
 
@@ -57,26 +79,27 @@ for i in range(3):
         "startTick": start,
         "lengthTick": length,
         "notes": [{"startTick": start + j * (BAR // 2), "lengthTick": BAR // 2 - 40,
-                   "pitch": p, "velocity": 104} for j, p in enumerate(seq)],
+                   "pitch": p, "velocity": 118 - (j % 3) * 32} for j, p in enumerate(seq)],
+        "controllers": [],
         "audioFile": None,
     })
 
 drums = [{
     "id": f"d{i}", "name": f"鼓组循环 {i + 1}", "kind": "audio",
     "startTick": i * 2 * BAR, "lengthTick": 2 * BAR,
-    "notes": [], "audioFile": "drums_loop.wav",
+    "notes": [], "controllers": [], "audioFile": "drums_loop.wav",
 } for i in range(5)]
 
 synth_auto = [{
     "id": f"a{i}", "name": name, "kind": "automation",
     "startTick": i * 2 * BAR, "lengthTick": 2 * BAR,
-    "notes": [], "audioFile": None,
+    "notes": [], "controllers": [], "audioFile": None,
 } for i, name in enumerate(["滤波器截止", "混响干湿", "音高微调", "滤波器截止", "音量包络"])]
 
 vocal = [{
     "id": f"v{i}", "name": f"人声 {i + 1}", "kind": "audio",
     "startTick": (2 + i * 4) * BAR, "lengthTick": 4 * BAR,
-    "notes": [], "audioFile": f"vocal_take{i + 1}.wav",
+    "notes": [], "controllers": [], "audioFile": f"vocal_take{i + 1}.wav",
 } for i in range(2)]
 
 tracks = [
@@ -97,7 +120,8 @@ payload = {
         "ppq": PPQ,
         "sampleRate": 48000,
     },
-    "tempoMap": [[0, 120.0]],
+    # 阶梯速度轨：示例工程也要能看出"变速播放"是活的（120 → 100 → 140）
+    "tempoMap": [[0, 120.0], [4 * BAR, 100.0], [8 * BAR, 140.0]],
     "markers": [[0, "前奏"], [4 * BAR, "主歌"], [8 * BAR, "副歌"]],
     "tracks": tracks,
     "lengthTicks": BARS * BAR,

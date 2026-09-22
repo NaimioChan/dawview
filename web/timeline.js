@@ -3,13 +3,30 @@
 
 const ROW_H = 44;         // 默认行高（Alt+滚轮可调）
 const HEAD_W = 200;       // 默认轨道名栏宽（干净模式下为 0）
-const RULER_H = 30;
+const RULER_H = 30;       // 默认标尺（上方时间轴）高度
+
+// 标尺高度是可变的：导出模式下不画标尺（= 0）。所有几何都读 rulerH，
+// 不读常量 —— 否则隐藏标尺后内容会整体上移 30px 对不齐。
+let rulerH = RULER_H;
+let exportMode = false;   // 导出模式：不画网格线（标尺 = 0；滚动条在 CSS 侧 body.export）
+
+function setCanvasExportMode(on) {
+  exportMode = !!on;
+  rulerH = exportMode ? 0 : RULER_H;
+}
+
+function getRulerH() {
+  return rulerH;
+}
+
 const CLIP_PAD = 4;
 const KEYS_W = 64;        // 钢琴窗左侧键栏宽
 const SEMI_H = 14;        // 钢琴窗每个半音的行高（Alt+滚轮可调）
 const SWATCH_W = 26;      // 轨道头右侧色卡按钮宽
 const SWATCH_H = 16;
 const SWATCH_MIN_HEAD = 96;   // 轨道栏窄于此就不画色卡（放不下）
+const LANE_HEAD_H = 18;       // 钢琴窗下部每栏的标题条高度
+const LANE_MIN_H = 24;        // 单栏绘制区最小高度（再小就只剩一条线了）
 
 const PITCH_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
@@ -79,6 +96,8 @@ function makeMidiView(project, opts) {
   const sig = meta.timeSig || [4, 4];
   const tracks = project.tracks || [];
   const notes = [];
+  const ccMap = new Map();       // CC 号 -> [[绝对 tick, 值 0..127], ...]
+  const ccNames = {};
   for (let ti = 0; ti < tracks.length; ti++) {
     for (const clip of tracks[ti].clips || []) {
       if (clip.kind !== 'midi') continue;
@@ -91,8 +110,22 @@ function makeMidiView(project, opts) {
           track: ti,
         });
       }
+      // 契约 v0.3：controllers[].points 的 tick 相对片段起点（同 Note.startTick）
+      for (const cc of clip.controllers || []) {
+        const arr = ccMap.get(cc.cc) || [];
+        for (const pt of cc.points || []) {
+          if (!Array.isArray(pt) || pt.length < 2) continue;
+          arr.push([clip.startTick + Number(pt[0]), Number(pt[1])]);
+        }
+        ccMap.set(cc.cc, arr);
+        if (!ccNames[cc.cc]) ccNames[cc.cc] = cc.name || `CC${cc.cc}`;
+      }
     }
   }
+  const ccs = [...ccMap.entries()].map(([cc, pts]) => {
+    pts.sort((a, b) => a[0] - b[0]);
+    return { cc, points: pts };
+  }).sort((a, b) => a.cc - b.cc);
   notes.sort((a, b) => a.tick - b.tick);
   const pitches = notes.map((n) => n.pitch);
   const noteLo = pitches.length ? Math.min(...pitches) : 48;
@@ -104,6 +137,15 @@ function makeMidiView(project, opts) {
     beatTicks: ppq,
     tracks,
     notes,
+    ccs,
+    ccNames,
+    // 下部的力度 / CC 栏（显示偏好，来自 localStorage，不属于契约）
+    lanes: (opts.lanes || []).map((l) => ({
+      id: l.id,
+      kind: l.kind === 'cc' ? 'cc' : 'velocity',
+      cc: Number(l.cc) | 0,
+      h: Math.max(LANE_MIN_H, Number(opts.laneH) || 84),
+    })),
     noteTracks: [...new Set(notes.map((n) => n.track))],
     // 全 128 个琴键都画（含工程 MIDI 范围之外的），纵向靠滚动看
     pitchLo: 0,
@@ -119,8 +161,8 @@ function makeMidiView(project, opts) {
 
 function contentSize(view, widthPx) {
   const height = view.mode === 'midi'
-    ? RULER_H + (view.pitchHi - view.pitchLo + 1) * view.semiH + 8
-    : RULER_H + view.tracks.length * view.rowH + 8;
+    ? rulerH + (view.pitchHi - view.pitchLo + 1) * view.semiH + 8
+    : rulerH + view.tracks.length * view.rowH + 8;
   return {
     width: Math.max(widthPx, view.headW + view.lengthTicks * view.pxPerTick + 40),
     height,
@@ -129,7 +171,7 @@ function contentSize(view, widthPx) {
 
 function tickToX(view, tick) { return view.headW + tick * view.pxPerTick; }
 function xToTick(view, x) { return Math.max(0, (x - view.headW) / view.pxPerTick); }
-function rowTop(view, index) { return RULER_H + index * view.rowH; }
+function rowTop(view, index) { return rulerH + index * view.rowH; }
 
 /* ---------------------------------------------------------- 轨道颜色 */
 
@@ -240,11 +282,13 @@ function draw(canvas, view, state) {
   // 轨道行底色（含行分隔）
   for (let i = 0; i < view.tracks.length; i++) {
     const y = rowTop(view, i) - sy;
-    if (y > h || y + rowH < RULER_H) continue;
+    if (y > h || y + rowH < rulerH) continue;
     ctx.fillStyle = i % 2 ? c.panel : c.bg;
     ctx.fillRect(0, y, w, rowH);
-    ctx.fillStyle = c.border;
-    ctx.fillRect(0, y + rowH - 1, w, 1);
+    if (!exportMode) {               // 行分隔线也算"背景格线"
+      ctx.fillStyle = c.border;
+      ctx.fillRect(0, y + rowH - 1, w, 1);
+    }
   }
 
   // 网格 + 标尺（两种视图共用）
@@ -254,13 +298,13 @@ function draw(canvas, view, state) {
   // 旧写法只在"整行滚出"时 continue，压线的行会直接画进标尺里（穿透标尺）。
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, RULER_H, w, h - RULER_H);
+  ctx.rect(0, rulerH, w, h - rulerH);
   ctx.clip();
 
   // 片段
   for (let i = 0; i < view.tracks.length; i++) {
     const y = rowTop(view, i) - sy;
-    if (y > h || y + rowH < RULER_H) continue;
+    if (y > h || y + rowH < rulerH) continue;
     for (const clip of view.tracks[i].clips || []) {
       drawClip(ctx, view, clip, y, sx, w, c, state, i, hits, fx);
     }
@@ -269,12 +313,12 @@ function draw(canvas, view, state) {
   // 轨道名栏（钉在左侧，覆盖片段与网格）；干净模式下 headW=0 即整块不画
   if (headW > 0) {
     ctx.fillStyle = c.panel;
-    ctx.fillRect(0, RULER_H, headW, h - RULER_H);
+    ctx.fillRect(0, rulerH, headW, h - rulerH);
     ctx.fillStyle = c.border;
-    ctx.fillRect(headW - 1, RULER_H, 1, h - RULER_H);
+    ctx.fillRect(headW - 1, rulerH, 1, h - rulerH);
     for (let i = 0; i < view.tracks.length; i++) {
       const y = rowTop(view, i) - sy;
-      if (y > h || y + rowH < RULER_H) continue;
+      if (y > h || y + rowH < rulerH) continue;
       drawTrackHead(ctx, view.tracks[i], y, c, headW, rowH,
                     trackHex(state, view, i), trackSwatchRect(view, i, sy));
     }
@@ -284,11 +328,11 @@ function draw(canvas, view, state) {
   // 标尺左上角那格（它本来就在标尺里，画在裁剪之外）
   if (headW > 0) {
     ctx.fillStyle = c.panel;
-    ctx.fillRect(0, 0, headW, RULER_H);
+    ctx.fillRect(0, 0, headW, rulerH);
     ctx.fillStyle = c.border;
-    ctx.fillRect(headW - 1, 0, 1, RULER_H);
+    ctx.fillRect(headW - 1, 0, 1, rulerH);
     ctx.fillStyle = c.muted;
-    ctx.fillText('轨道', 12, RULER_H / 2 - 1);
+    ctx.fillText('轨道', 12, rulerH / 2 - 1);
   }
 
   // 播放头（只画在内容区：不开干净模式时拖尾不能盖到轨道头上）
@@ -444,21 +488,25 @@ function drawGridAndRuler(ctx, view, sx, w, h, c, headW) {
   // 线太密就只画小节线（缩放很小时不然是一堵墙，也省性能）
   const step = view.beatTicks * view.pxPerTick < 6 ? view.barTicks : view.beatTicks;
   const firstBeat = Math.floor(tick0 / step) * step;
-  for (let t = firstBeat; t <= tick1; t += step) {
-    const x = Math.round(tickToX(view, t) - sx) + 0.5;
-    if (x < headW - 1 || x > w) continue;
-    const isBar = Math.abs(t % view.barTicks) < 1e-6;
-    ctx.strokeStyle = isBar ? c.grid : c.gridBeat;
-    ctx.beginPath();
-    ctx.moveTo(x, RULER_H);
-    ctx.lineTo(x, h);
-    ctx.stroke();
+  if (!exportMode) {                 // 导出模式：一根网格线都不画
+    for (let t = firstBeat; t <= tick1; t += step) {
+      const x = Math.round(tickToX(view, t) - sx) + 0.5;
+      if (x < headW - 1 || x > w) continue;
+      const isBar = Math.abs(t % view.barTicks) < 1e-6;
+      ctx.strokeStyle = isBar ? c.grid : c.gridBeat;
+      ctx.beginPath();
+      ctx.moveTo(x, rulerH);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
   }
 
+  if (rulerH <= 0) return;           // 标尺被藏起来（导出模式），后面全是标尺的活
+
   ctx.fillStyle = c.panel;
-  ctx.fillRect(0, 0, w, RULER_H);
+  ctx.fillRect(0, 0, w, rulerH);
   ctx.fillStyle = c.border;
-  ctx.fillRect(0, RULER_H - 1, w, 1);
+  ctx.fillRect(0, rulerH - 1, w, 1);
   ctx.font = '11px "Segoe UI", system-ui, sans-serif';
   ctx.textBaseline = 'middle';
   const firstBar = Math.floor(tick0 / view.barTicks) * view.barTicks;
@@ -470,11 +518,11 @@ function drawGridAndRuler(ctx, view, sx, w, h, c, headW) {
     if (x < headW || x > w) continue;
     ctx.strokeStyle = c.muted;
     ctx.beginPath();
-    ctx.moveTo(x, RULER_H - 9);
-    ctx.lineTo(x, RULER_H - 1);
+    ctx.moveTo(x, rulerH - 9);
+    ctx.lineTo(x, rulerH - 1);
     ctx.stroke();
     ctx.fillStyle = c.muted;
-    ctx.fillText(String(Math.floor(t / view.barTicks) + 1), x + 4, RULER_H / 2 - 1);
+    ctx.fillText(String(Math.floor(t / view.barTicks) + 1), x + 4, rulerH / 2 - 1);
   }
 }
 
@@ -487,17 +535,20 @@ function drawMidiRoll(ctx, view, state, c, w, h, hits, fx) {
   const semiH = view.semiH;
   const lo = view.pitchLo;
   const hi = view.pitchHi;
-  const yOf = (p) => RULER_H + (hi - p) * semiH - sy;
+  const yOf = (p) => rulerH + (hi - p) * semiH - sy;
   const k = fx.strength || 1;
+  // 下部的控制器栏（力度 / CC）：音符区让出它们占的高度
+  const lay = laneLayout(view, h);
+  const noteBottom = lay.total ? lay.top : h;
 
   // 半音底色：黑键行压暗、C 音行稍亮，八度处一条分隔线
   for (let p = hi; p >= lo; p--) {
     const y = yOf(p);
-    if (y > h || y + semiH < RULER_H) continue;
+    if (y > h || y + semiH < rulerH) continue;
     const pc = p % 12;
     ctx.fillStyle = BLACK_KEYS.has(pc) ? c.gridBeat : (pc === 0 ? c.panel : c.bg);
     ctx.fillRect(0, y, w, semiH);
-    if (pc === 0) {
+    if (pc === 0 && !exportMode) {
       ctx.fillStyle = c.border;
       ctx.fillRect(headW, y + semiH - 1, Math.max(0, w - headW), 1);
     }
@@ -520,14 +571,14 @@ function drawMidiRoll(ctx, view, state, c, w, h, hits, fx) {
   // 不能"顶"在键栏边上（旧写法把左缘 clamp 到 headW，长音符会一直贴着键栏直到 note-off）
   ctx.save();
   ctx.beginPath();
-  ctx.rect(headW, RULER_H, Math.max(0, w - headW), Math.max(0, h - RULER_H));
+  ctx.rect(headW, rulerH, Math.max(0, w - headW), Math.max(0, noteBottom - rulerH));
   ctx.clip();
 
   for (const n of view.notes) {
     const nx = tickToX(view, n.tick) - sx;
     const nw = Math.max(2, n.lengthTick * view.pxPerTick);
     const ny = yOf(n.pitch);
-    if (nx + nw < headW || nx > w || ny > h || ny + nh < RULER_H) continue;
+    if (nx + nw < headW || nx > w || ny > h || ny + nh < rulerH) continue;
     const base = trackColor(n.track);
     ctx.globalAlpha = 0.45 + (n.velocity / 127) * 0.55;
     ctx.fillStyle = base;
@@ -555,24 +606,169 @@ function drawMidiRoll(ctx, view, state, c, w, h, hits, fx) {
   if (headW > 0) {
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, RULER_H, headW, Math.max(0, h - RULER_H));
+    ctx.rect(0, rulerH, headW, Math.max(0, noteBottom - rulerH));
     ctx.clip();
     drawPianoKeys(ctx, view, yOf, c, headW, h);
     ctx.restore();
   }
 
+  // 控制器栏盖在音符区下面（不透明），播放头最后画、压在栏上穿过去
+  if (lay.total) drawLanes(ctx, view, state, c, w, h, lay);
+
   const px = Math.round(tickToX(view, state.playheadTick) - sx) + 0.5;
   if (px >= headW && px <= w) drawPlayhead(ctx, c, px, h, state, fx, headW, w);
+}
+
+/* ------------------------------------------------- 下部控制器栏（v0.3） */
+
+// 栏位排版：从视口底部往上摞，音符区至少留 60px（栏太多时会被挤扁）
+function laneLayout(view, h) {
+  const lanes = (view.mode === 'midi' && view.lanes) ? view.lanes : [];
+  if (!lanes.length) return { total: 0, top: h, boxes: [] };
+  let total = 0;
+  for (const l of lanes) total += l.h + LANE_HEAD_H;
+  const top = Math.max(rulerH + 60, h - total);
+  let y = top;
+  const boxes = lanes.map((lane) => {
+    const box = { lane, y, h: lane.h };
+    y += lane.h + LANE_HEAD_H;
+    return box;
+  });
+  return { total, top, boxes };
+}
+
+function laneLabelText(view, lane) {
+  if (lane.kind === 'velocity') return '力度';
+  const name = (view.ccNames || {})[lane.cc];
+  return `CC${lane.cc}${name && name !== `CC${lane.cc}` ? ' ' + name : ''}`;
+}
+
+function drawLanes(ctx, view, state, c, w, h, lay) {
+  const sx = state.scrollX;
+  const headW = view.headW;
+  const tick0 = xToTick(view, sx);
+  const tick1 = xToTick(view, sx + w);
+  const step = view.beatTicks * view.pxPerTick < 6 ? view.barTicks : view.beatTicks;
+  const firstBeat = Math.floor(tick0 / step) * step;
+
+  ctx.fillStyle = c.panel;
+  ctx.fillRect(0, lay.top, w, Math.max(0, h - lay.top));
+
+  for (const box of lay.boxes) {
+    const lane = box.lane;
+    const yData = box.y + LANE_HEAD_H;
+    const hData = Math.max(8, box.h);
+
+    ctx.fillStyle = c.bg;
+    ctx.fillRect(0, yData, w, hData);
+
+    // 栏内竖网格：跟主网格同一条基准线（导出模式一起关掉）
+    for (let t = firstBeat; !exportMode && t <= tick1; t += step) {
+      const x = Math.round(tickToX(view, t) - sx) + 0.5;
+      if (x < headW - 1 || x > w) continue;
+      const isBar = Math.abs(t % view.barTicks) < 1e-6;
+      ctx.strokeStyle = isBar ? c.grid : c.gridBeat;
+      ctx.beginPath();
+      ctx.moveTo(x, yData);
+      ctx.lineTo(x, yData + hData);
+      ctx.stroke();
+    }
+
+    // 中线（64）参考：CC 与力度都按 0..127 归一化，读图有个基准
+    ctx.setLineDash([2, 3]);
+    ctx.strokeStyle = c.grid;
+    const yMid = yData + hData - hData * (64 / 127);
+    ctx.beginPath();
+    ctx.moveTo(headW, Math.round(yMid) + 0.5);
+    ctx.lineTo(w, Math.round(yMid) + 0.5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(headW, yData, Math.max(0, w - headW), hData);
+    ctx.clip();
+    if (lane.kind === 'velocity') drawVelocityLane(ctx, view, state, c, box, tick0, tick1);
+    else drawCcLane(ctx, view, state, c, box, tick0, tick1);
+    ctx.restore();
+
+    // 标题条压在数据上（干净模式 headW=0 时也读得到栏名）
+    ctx.fillStyle = c.panel;
+    ctx.fillRect(0, box.y, w, LANE_HEAD_H);
+    ctx.fillStyle = c.border;
+    ctx.fillRect(0, box.y + LANE_HEAD_H - 1, w, 1);
+    ctx.fillStyle = c.text;
+    ctx.font = '10px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(laneLabelText(view, lane), 8, box.y + LANE_HEAD_H / 2);
+  }
+
+  ctx.fillStyle = c.border;
+  ctx.fillRect(0, lay.top, w, 1);
+}
+
+// 力度：每个音符一根柱，柱高 = velocity / 127
+function drawVelocityLane(ctx, view, state, c, box, tick0, tick1) {
+  const sx = state.scrollX;
+  const y0 = box.y + LANE_HEAD_H;
+  const hData = Math.max(8, box.h);
+  const bw = Math.max(2, Math.min(7, view.pxPerTick * 24));   // 柱宽跟着缩放走，缩太小就保持 2px
+  ctx.fillStyle = c.accent;
+  for (const n of view.notes) {
+    if (n.tick > tick1 || n.tick + n.lengthTick < tick0) continue;
+    const x = tickToX(view, n.tick) - sx;
+    const v = Math.max(0, Math.min(127, n.velocity || 0)) / 127;
+    const bh = Math.max(1, hData * v);
+    ctx.fillRect(x, y0 + hData - bh, bw, bh);
+  }
+}
+
+// CC：阶梯折线（MIDI CC 是保持值，不是斜坡；踏板 0/127 这样最清楚）
+function drawCcLane(ctx, view, state, c, box, tick0, tick1) {
+  const sx = state.scrollX;
+  const y0 = box.y + LANE_HEAD_H;
+  const hData = Math.max(8, box.h);
+  const lane = box.lane;
+  const entry = (view.ccs || []).find((e) => e.cc === lane.cc);
+  if (!entry || !entry.points.length) return;
+  const pts = entry.points;
+  const yOf = (v) => y0 + hData - Math.max(0, Math.min(127, v)) / 127 * hData;
+
+  let lo = 0;
+  let hi = pts.length - 1;
+  let start = pts.length;
+  while (lo <= hi) {                       // 第一个 tick >= tick0 的点
+    const mid = (lo + hi) >> 1;
+    if (pts[mid][0] >= tick0) { start = mid; hi = mid - 1; } else lo = mid + 1;
+  }
+  const from = Math.max(0, start - 1);     // 往前多取一个，左边缘有值
+
+  ctx.strokeStyle = c.accent;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  let prevY = null;
+  let started = false;
+  for (let i = from; i < pts.length; i++) {
+    const tick = pts[i][0];
+    const x = tickToX(view, tick) - sx;
+    const y = yOf(pts[i][1]);
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+    prevY = y;
+    if (tick > tick1) break;
+  }
+  ctx.stroke();
+  ctx.lineWidth = 1;
 }
 
 function drawPianoKeys(ctx, view, yOf, c, headW, h) {
   const semiH = view.semiH;
   ctx.fillStyle = c.panel;
-  ctx.fillRect(0, RULER_H, headW, h - RULER_H);
+  ctx.fillRect(0, rulerH, headW, h - rulerH);
 
   for (let p = view.pitchHi; p >= view.pitchLo; p--) {
     const y = yOf(p);
-    if (y > h || y + semiH < RULER_H) continue;
+    if (y > h || y + semiH < rulerH) continue;
     const pc = p % 12;
     const black = BLACK_KEYS.has(pc);
     // 白键：浅色条；黑键：深色短条
@@ -589,13 +785,13 @@ function drawPianoKeys(ctx, view, yOf, c, headW, h) {
   }
 
   ctx.fillStyle = c.panel;
-  ctx.fillRect(0, 0, headW, RULER_H);
+  ctx.fillRect(0, 0, headW, rulerH);
   ctx.fillStyle = c.border;
   ctx.fillRect(headW - 1, 0, 1, h);
   ctx.fillStyle = c.muted;
   ctx.font = '11px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
   ctx.textBaseline = 'middle';
-  ctx.fillText('音高', 12, RULER_H / 2 - 1);
+  ctx.fillText('音高', 12, rulerH / 2 - 1);
 }
 
 function drawNotes(ctx, view, clip, x0, y, hgt, c, base, hits, fx) {
@@ -660,5 +856,7 @@ if (typeof module !== 'undefined') {
     tickToX, xToTick, contentSize, barLabel, rowTop, pitchName, mixHex,
     makeView, makeMidiView, ROW_H, HEAD_W, KEYS_W, SEMI_H, RULER_H,
     trackHex, trackSwatchRect, hitTrackSwatch, SWATCH_W, SWATCH_H, clipKindHex,
+    laneLayout, laneLabelText, LANE_HEAD_H, LANE_MIN_H,
+    setCanvasExportMode, getRulerH,
   };
 }

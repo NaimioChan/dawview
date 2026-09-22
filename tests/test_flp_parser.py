@@ -210,7 +210,9 @@ class TestRealFlp:
         notes = [n for c in clips for n in c["notes"]]
         assert len(d["tracks"]) == 167
         assert len(clips) == 3274
-        assert len(notes) == 3591
+        # 3248 = 3591 - 343：模式片段现在只取"片段真正播的那一段"
+        # （记录 @24 的 u32 裁剪区间，实测 67/101 个模式片段带裁剪）
+        assert len(notes) == 3248
 
         kinds: dict[str, int] = {}
         for c in clips:

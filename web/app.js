@@ -21,6 +21,7 @@ const state = {
   rowH: ROW_H,             // 走带行高，Alt+滚轮可调
   semiH: SEMI_H,           // 钢琴窗半音行高，Alt+滚轮可调
   viewMode: 'arrange',     // 'arrange' 走带 | 'midi' 钢琴窗
+  exportMode: false,       // 导出模式：隐藏网格线 / 上方标尺 / 滚动条（截图叠层用）
   // 播放动效
   fx: {
     on: true,              // 总开关
@@ -35,6 +36,10 @@ const state = {
   kindFilter: '',          // 轨道选择器里按种类快速筛选：'' 全部 | midi | audio | automation | ...
   trackColors: {},         // 轨道自定色：工程轨道下标 -> '#rrggbb'（存 localStorage）
   swatchTrack: -1,         // 色卡选择器当前对着哪条轨道（画布下标），-1 = 关着
+  // 钢琴窗下部的力度 / CC 栏（吃契约 v0.3 的 notes[].velocity 与 controllers[]）
+  lanes: [],               // [{id, kind:'velocity'|'cc', cc}]，默认空 = 不显示
+  laneH: 84,               // 单栏绘制区高度（px），标题条另算
+  tempo: null,             // 速度轨预处理结果（buildTempo），播放时按它变速
 };
 
 const VIEW_KEY = 'dawview.view';
@@ -42,6 +47,9 @@ const ROW_H_MIN = 22;
 const ROW_H_MAX = 140;
 const SEMI_H_MIN = 7;
 const SEMI_H_MAX = 40;
+const LANE_H_MIN = 40;
+const LANE_H_MAX = 240;
+let laneSeq = 0;           // 栏位 id 自增（只在本页内存里用）
 
 function saveViewPrefs() {
   try {
@@ -49,9 +57,12 @@ function saveViewPrefs() {
       showChrome: state.showChrome, showHeads: state.showHeads,
       showClipNames: state.showClipNames, followMode: state.followMode,
       rowH: state.rowH, semiH: state.semiH, viewMode: state.viewMode,
+      exportMode: state.exportMode, pxPerTick: state.pxPerTick,
       speed: state.speed, fx: state.fx,
       hiddenTracks: [...state.hiddenTracks],
       kindFilter: state.kindFilter,
+      lanes: state.lanes,
+      laneH: state.laneH,
     }));
   } catch (e) { /* 隐私模式忽略 */ }
 }
@@ -186,7 +197,7 @@ function rebuildView() {
   };
   const project = { ...state.project, tracks };
   state.view = state.viewMode === 'midi'
-    ? makeMidiView(project, { ...opts, semiH: state.semiH })
+    ? makeMidiView(project, { ...opts, semiH: state.semiH, lanes: state.lanes, laneH: state.laneH })
     : makeView(project, { ...opts, rowH: state.rowH });
   resizeSpacer();
 }
@@ -194,22 +205,85 @@ function rebuildView() {
 function resizeSpacer() {
   const size = contentSize(state.view, el.scroll.clientWidth);
   el.spacer.style.width = size.width + 'px';
-  el.spacer.style.height = size.height + 'px';
+  // 画布本身（sticky，一屏高）已经贡献了视口那一段高度，spacer 只补差额，
+  // 否则滚动范围会多出一屏（滚到底能滚出空白）。
+  el.spacer.style.height = Math.max(0, size.height - el.scroll.clientHeight) + 'px';
 }
 
 function paint() {
   if (!state.view) return;
   state.scrollX = el.scroll.scrollLeft;
   state.scrollY = el.scroll.scrollTop;
-  el.canvas.style.transform = `translate(${state.scrollX}px, ${state.scrollY}px)`;
   draw(el.canvas, state.view, state);
 }
 
 /* -------------------------------------------------------------- 走带播放 */
 
-function ticksPerSecond() {
-  const meta = state.project.meta || {};
+/* 速度轨（契约 v0.3：阶梯语义）——[[tick, bpm], ...] 预处理成三张平行数组，
+   tick<->秒 走二分查找，播放时按"当前 tick 处的速度"推进。 */
+function buildTempo(project) {
+  const meta = (project && project.meta) || {};
+  const ppq = meta.ppq || 480;
+  const byTick = new Map();
+  for (const pair of (project && project.tempoMap) || []) {
+    if (!Array.isArray(pair) || pair.length < 2) continue;
+    const t = Number(pair[0]);
+    const b = Number(pair[1]);
+    if (!isFinite(t) || !isFinite(b) || t < 0 || b <= 0) continue;
+    byTick.set(Math.round(t * 1e6) / 1e6, b);     // 同 tick 取最后一个
+  }
+  const fallback = Number(meta.bpm) > 0 ? Number(meta.bpm) : 120;
+  if (!byTick.size) byTick.set(0, fallback);
+  const ticks = [...byTick.keys()].sort((a, b) => a - b);
+  if (ticks[0] > 0) ticks.unshift(0);             // 首点必须在工程开头
+  const bpms = new Array(ticks.length);
+  let last = fallback;
+  for (let i = ticks.length - 1; i >= 0; i--) {   // 倒着填：补出来的点用后面第一个真速度
+    last = byTick.has(ticks[i]) ? byTick.get(ticks[i]) : last;
+    bpms[i] = last;
+  }
+  const times = [0];
+  for (let i = 1; i < ticks.length; i++) {        // 阶梯：每段用段首速度
+    times.push(times[i - 1] + (ticks[i] - ticks[i - 1]) / ppq * 60 / bpms[i - 1]);
+  }
+  const idxAt = (tick) => {
+    if (tick <= ticks[0]) return 0;
+    let lo = 0;
+    let hi = ticks.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (ticks[mid] <= tick) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  };
+  const end = ticks.length - 1;
+  return {
+    ppq, ticks, bpms, times,
+    points: ticks.length,
+    bpmAt(tick) { return bpms[idxAt(tick)]; },
+    secAt(tick) {
+      const i = idxAt(tick);
+      return times[i] + (tick - ticks[i]) / ppq * 60 / bpms[i];
+    },
+    tickAtSec(sec) {
+      if (!(sec > 0)) return 0;
+      let i = end;
+      while (i > 0 && times[i] > sec) i--;
+      return ticks[i] + (sec - times[i]) * bpms[i] / 60 * ppq;
+    },
+    totalSec: times[end],        // times[i] 就是第 i 个速度点的绝对秒数
+  };
+}
+
+// 某个 tick 处的推进速率（tick/秒）——有速度轨就按轨上的速度，没有就按 meta.bpm
+function rateAt(tick) {
+  const meta = (state.project && state.project.meta) || {};
+  if (state.tempo) return (state.tempo.bpmAt(tick) / 60) * state.tempo.ppq;
   return ((meta.bpm || 120) / 60) * (meta.ppq || 480);
+}
+
+function ticksPerSecond() {
+  return rateAt(state.playheadTick);
 }
 
 function frame(ts) {
@@ -218,7 +292,10 @@ function frame(ts) {
   const dt = Math.min(0.25, (ts - state.lastTs) / 1000);
   state.lastTs = ts;
   const prev = state.playheadTick;
-  state.playheadTick += dt * ticksPerSecond() * state.speed;
+  // 变速播放：先用起点速度估半步，再用中点速度定这一步（一阶预测-校正）。
+  // 变速点密集时（Cubase 那份工程 1127 个点）整帧套用一个旧速度会明显跑偏。
+  const half = prev + dt * rateAt(prev) * state.speed * 0.5;
+  state.playheadTick = prev + dt * rateAt(half) * state.speed;
 
   const end = state.view.lengthTicks;
   if (state.playheadTick >= end) {
@@ -298,7 +375,129 @@ function setPlaying(on) {
 }
 
 function updatePosLabel() {
-  el.posLabel.textContent = barLabel(state.view, state.playheadTick);
+  const tick = state.playheadTick;
+  const meta = (state.project && state.project.meta) || {};
+  const bpm = state.tempo ? state.tempo.bpmAt(tick) : (meta.bpm || 0);
+  el.posLabel.textContent = `${barLabel(state.view, tick)} · ${bpm.toFixed(1)} BPM`;
+}
+
+/* ------------------------------------------------ 钢琴窗下部：力度 / CC 栏 */
+
+function ccChoices() {
+  // 工程里实际有哪些 CC（契约 controllers 汇总），没有就是空数组
+  const byCc = new Map();
+  for (const t of (state.project && state.project.tracks) || []) {
+    for (const c of t.clips || []) {
+      for (const cc of c.controllers || []) {
+        const cur = byCc.get(cc.cc) || { cc: cc.cc, name: cc.name || `CC${cc.cc}`, n: 0 };
+        cur.n += (cc.points || []).length;
+        byCc.set(cc.cc, cur);
+      }
+    }
+  }
+  return [...byCc.values()].sort((a, b) => a.cc - b.cc);
+}
+
+function laneOf(kind, cc) {
+  return state.lanes.find((l) => l.kind === kind && (kind !== 'cc' || l.cc === cc)) || null;
+}
+
+function afterLaneChange() {
+  saveViewPrefs();
+  rebuildView();
+  syncSettingsUi();
+  paint();
+}
+
+function addLane(patch) {
+  laneSeq += 1;
+  const lane = Object.assign({ id: `lane${laneSeq}`, kind: 'velocity', cc: 0 }, patch);
+  if (lane.kind === 'cc' && laneOf('cc', lane.cc)) return;    // 同一个 CC 不重复加
+  state.lanes.push(lane);
+  afterLaneChange();
+}
+
+function removeLane(id) {
+  state.lanes = state.lanes.filter((l) => l.id !== id);
+  afterLaneChange();
+}
+
+function setLaneCc(id, cc) {
+  const lane = state.lanes.find((l) => l.id === id);
+  if (!lane) return;
+  if (state.lanes.some((l) => l.id !== id && l.kind === 'cc' && l.cc === cc)) {
+    toast(`CC${cc} 已经有一栏了`);
+    return;
+  }
+  lane.cc = cc;
+  afterLaneChange();
+}
+
+function setVelocityLane(on) {
+  const lane = laneOf('velocity');
+  if (on && !lane) addLane({ kind: 'velocity' });
+  else if (!on && lane) removeLane(lane.id);
+}
+
+function setLaneHeight(v) {
+  state.laneH = Math.min(LANE_H_MAX, Math.max(LANE_H_MIN, Math.round(v)));
+  saveViewPrefs();
+  syncSettingsUi();
+  paint();
+}
+
+// 设置菜单里的"CC 曲线栏"编辑器：列出已加的栏（可换 CC / 删）+ 加一栏
+function renderLaneEditor(ctl, refresh) {
+  const choices = ccChoices();
+  const ccLanes = state.lanes.filter((l) => l.kind === 'cc');
+
+  const list = document.createElement('div');
+  list.className = 'lane-list';
+  if (!ccLanes.length) {
+    const empty = document.createElement('span');
+    empty.className = 'lane-empty';
+    empty.textContent = choices.length ? '还没加 CC 栏' : '本工程没有 CC 数据';
+    list.appendChild(empty);
+  }
+  for (const lane of ccLanes) {
+    const row = document.createElement('div');
+    row.className = 'lane-row';
+    const sel = document.createElement('select');
+    sel.className = 'lane-cc';
+    for (const c of choices) {
+      const o = document.createElement('option');
+      o.value = String(c.cc);
+      o.textContent = `CC${c.cc} ${c.name} · ${c.n} 点`;
+      sel.appendChild(o);
+    }
+    if (!choices.some((c) => c.cc === lane.cc)) {
+      const o = document.createElement('option');       // 工程里没有也保留当前选择
+      o.value = String(lane.cc);
+      o.textContent = `CC${lane.cc}`;
+      sel.appendChild(o);
+    }
+    sel.value = String(lane.cc);
+    sel.addEventListener('change', () => { setLaneCc(lane.id, parseInt(sel.value, 10)); });
+    const del = document.createElement('button');
+    del.className = 'seg lane-del';
+    del.textContent = '删';
+    del.title = '删掉这一栏';
+    del.addEventListener('click', () => removeLane(lane.id));
+    row.append(sel, del);
+    list.appendChild(row);
+  }
+  ctl.appendChild(list);
+
+  const add = document.createElement('button');
+  add.className = 'seg lane-add';
+  add.textContent = '+ 加一栏';
+  add.disabled = !choices.length || ccLanes.length >= choices.length;
+  add.addEventListener('click', () => {
+    const free = choices.find((c) => !laneOf('cc', c.cc));
+    if (free) addLane({ kind: 'cc', cc: free.cc });
+    refresh();
+  });
+  ctl.appendChild(add);
 }
 
 /* ------------------------------------------------------------------ 交互 */
@@ -330,6 +529,7 @@ function bindUi() {
     if (e.code === 'Space') { e.preventDefault(); setPlaying(!state.playing); }
     if (e.code === 'Home') { el.btnHome.click(); }
     if (e.code === 'KeyH') { setClean(!isClean()); }
+    if (e.code === 'KeyE') { setExportMode(!isExport()); }
     if (e.code === 'KeyM') { setViewMode(state.viewMode === 'midi' ? 'arrange' : 'midi'); }
   });
 
@@ -441,6 +641,25 @@ function setClean(on) {
   paint();
 }
 
+/* ------------------------------------------- 导出模式（截图 / 叠层编辑用） */
+
+// 一键隐藏"背景格线 + 上方标尺 + 滚动条"：导出干净的底图，拿去叠层编辑。
+// 和干净模式互不依赖 —— 两个都开就是只剩内容（顶栏/轨道头/状态栏也没了）。
+function isExport() {
+  return state.exportMode;
+}
+
+function setExportMode(on) {
+  state.exportMode = !!on;
+  document.body.classList.toggle('export', state.exportMode);
+  setCanvasExportMode(state.exportMode);   // timeline.js：标尺高度 0 + 不画网格线
+  rebuildView();                           // 标尺没了，内容高度跟着变
+  saveViewPrefs();
+  syncSettingsUi();
+  paint();
+  if (state.exportMode) toast('导出模式：网格 / 标尺 / 滚动条已隐藏（快捷键 E）');
+}
+
 // 名栏宽度变化时补偿横向滚动，画面里的内容不会跳
 function applyHeads() {
   const before = state.view ? state.view.headW : (state.showHeads ? HEAD_W : 0);
@@ -509,6 +728,9 @@ const SETTINGS_SPEC = [
   { key: 'display', label: '显示', items: [
     { id: 'opt-clean', type: 'check', label: '干净模式', hint: '隐藏顶栏 / 轨道头 / 状态栏（快捷键 H）',
       get: () => isClean(), set: (v) => setClean(v) },
+    { id: 'opt-export', type: 'check', label: '导出模式',
+      hint: '隐藏背景格线 / 上方标尺 / 滚动条，截图叠层用（快捷键 E；和干净模式可叠加）',
+      get: () => isExport(), set: (v) => setExportMode(v) },
     { id: 'opt-clipnames', type: 'check', label: '片段上显示名称',
       get: () => state.showClipNames, set: (v) => setClipNames(v) },
     { id: 'opt-heads', type: 'check', label: '轨道头 / 钢琴键栏',
@@ -527,6 +749,14 @@ const SETTINGS_SPEC = [
   { key: 'play', label: '播放', items: [
     { id: 'opt-speed', type: 'seg', label: '播放速度', options: [['0.5', '0.5x'], ['1', '1x'], ['1.5', '1.5x'], ['2', '2x']],
       get: () => String(state.speed), set: (v) => setSpeed(parseFloat(v)) },
+  ]},
+  { key: 'lanes', label: '控制器', items: [
+    { id: 'opt-lane-vel', type: 'check', label: '力度栏',
+      hint: '钢琴窗视图下部：每个音符一根柱（只在钢琴窗里显示）',
+      get: () => !!laneOf('velocity'), set: (v) => setVelocityLane(v) },
+    { id: 'opt-lane-cc', type: 'custom', label: 'CC 曲线栏', render: renderLaneEditor },
+    { id: 'opt-lane-h', type: 'num', label: '单栏高度', min: LANE_H_MIN, max: LANE_H_MAX, step: 8, unit: 'px',
+      get: () => Math.round(state.laneH), set: (v) => setLaneHeight(v) },
   ]},
   { key: 'fx', label: '动效', items: [
     { id: 'opt-fxon', type: 'check', label: '启用播放动效', hint: '播放头扫过时给音符 / 片段加光效',
@@ -654,6 +884,8 @@ function renderSettingRow(item) {
     s.disabled = off;
     s.addEventListener('change', () => { item.set(s.value); refresh(); });
     ctl.appendChild(s);
+  } else if (item.type === 'custom') {
+    item.render(ctl, refresh);
   } else if (item.type === 'color') {
     const c = document.createElement('input');
     c.type = 'color';
@@ -1071,14 +1303,14 @@ function zoomRows(factor, clientY) {
   const rect = el.scroll.getBoundingClientRect();
   const viewY = clientY === undefined ? el.scroll.clientHeight / 2 : clientY - rect.top;
   const cur = midi ? state.semiH : state.rowH;
-  const rowIdx = (viewY + state.scrollY - RULER_H) / cur;
+  const rowIdx = (viewY + state.scrollY - getRulerH()) / cur;
   const next = midi
     ? Math.min(SEMI_H_MAX, Math.max(SEMI_H_MIN, cur * factor))
     : Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, cur * factor));
   if (Math.abs(next - cur) < 0.01) return;
   if (midi) state.semiH = next; else state.rowH = next;
   rebuildView();
-  el.scroll.scrollTop = Math.max(0, RULER_H + rowIdx * next - viewY);
+  el.scroll.scrollTop = Math.max(0, getRulerH() + rowIdx * next - viewY);
   saveViewPrefs();
   paint();
 }
@@ -1106,7 +1338,7 @@ function centerOnNoteRange() {
   const v = state.view;
   if (v.mode !== 'midi') return;
   const mid = ((v.noteLo === undefined ? 60 : v.noteLo) + (v.noteHi === undefined ? 60 : v.noteHi)) / 2;
-  const y = RULER_H + (v.pitchHi - mid) * v.semiH - el.scroll.clientHeight / 2;
+  const y = getRulerH() + (v.pitchHi - mid) * v.semiH - el.scroll.clientHeight / 2;
   el.scroll.scrollTop = Math.max(0, y);
   state.scrollY = el.scroll.scrollTop;
 }
@@ -1167,6 +1399,15 @@ function applyViewPrefs() {
   if (p.followMode === 'center') state.followMode = 'center';
   if (p.viewMode === 'midi') state.viewMode = 'midi';
   if (typeof p.speed === 'number' && p.speed > 0) state.speed = p.speed;
+  // 缩放也记住（上限跟 zoom()/zoomAt() 保持一致）
+  if (typeof p.pxPerTick === 'number' && isFinite(p.pxPerTick)) {
+    state.pxPerTick = Math.min(2.0, Math.max(0.002, p.pxPerTick));
+  }
+  if (p.exportMode === true) {
+    state.exportMode = true;
+    document.body.classList.add('export');
+    setCanvasExportMode(true);       // timeline.js 的全局函数（标尺 = 0、不画网格）
+  }
   if (typeof p.rowH === 'number' && isFinite(p.rowH)) {
     state.rowH = Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, p.rowH));
   }
@@ -1179,6 +1420,21 @@ function applyViewPrefs() {
     state.hiddenTracks = new Set(p.hiddenTracks.filter((i) => Number.isInteger(i) && i >= 0));
   }
   if (typeof p.kindFilter === 'string') state.kindFilter = p.kindFilter;
+  if (Array.isArray(p.lanes)) {
+    state.lanes = p.lanes
+      .filter((l) => l && (l.kind === 'velocity' || l.kind === 'cc'))
+      .map((l, i) => ({
+        id: typeof l.id === 'string' ? l.id : `lane${i + 1}`,
+        kind: l.kind,
+        cc: Number.isInteger(l.cc) ? Math.min(127, Math.max(0, l.cc)) : 0,
+      }))
+      .filter((l, i, arr) => arr.findIndex(
+        (o) => o.kind === l.kind && (l.kind !== 'cc' || o.cc === l.cc)) === i);
+    laneSeq = state.lanes.length;
+  }
+  if (typeof p.laneH === 'number' && isFinite(p.laneH)) {
+    state.laneH = Math.min(LANE_H_MAX, Math.max(LANE_H_MIN, Math.round(p.laneH)));
+  }
   if (p.showHeads === false) state.showHeads = false;
   if (p.showChrome === false) {
     state.showChrome = false;
@@ -1192,15 +1448,20 @@ function updateStatusLine() {
   const v = state.view;
   const bar = Math.max(1, Math.round(v.lengthTicks / v.barTicks));
   const src = state.dataSource === 'bridge' ? 'webui 桥' : 'project.json';
+  const tempo = state.tempo || { points: 1, totalSec: 0 };
+  const dur = tempo.totalSec ? ` · 时长 ${mmss(tempo.totalSec)}` : '';
+  const tempoText = tempo.points > 1 ? `速度轨 ${tempo.points} 点` : `${(state.project.meta.bpm || 0).toFixed(1)} BPM 定速`;
   if (v.mode === 'midi') {
     const notes = v.notes || [];
     const range = notes.length
       ? `${pitchName(Math.min(...notes.map((n) => n.pitch)))}–${pitchName(Math.max(...notes.map((n) => n.pitch)))}`
       : '—';
     const tracks = (v.noteTracks || []).length;
+    const laneText = state.lanes.length
+      ? ` · 控制器栏 ${state.lanes.length}（${state.lanes.map(laneTitle).join('、')}）` : '';
     el.status.textContent =
       `钢琴窗 · ${notes.length} 音符 · ${tracks} 条 MIDI 轨 · 音域 ${range} · `
-      + `长度 ${bar} 小节 · 数据来源 ${src}`;
+      + `长度 ${bar} 小节${dur} · ${tempoText}${laneText} · 数据来源 ${src}`;
     return;
   }
   const nClips = state.project.tracks.reduce((a, t) => a + t.clips.length, 0);
@@ -1210,7 +1471,18 @@ function updateStatusLine() {
   const hid = state.hiddenTracks.size;
   el.status.textContent =
     `${nTracks} 轨道${hid ? `（隐藏 ${hid}）` : ''} · ${nClips} 片段 · ${nNotes} 音符 · `
-    + `长度 ${bar} 小节 · 数据来源 ${src}`;
+    + `长度 ${bar} 小节${dur} · ${tempoText} · 数据来源 ${src}`;
+}
+
+function mmss(sec) {
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function laneTitle(lane) {
+  if (lane.kind === 'velocity') return '力度';
+  const found = ccChoices().find((c) => c.cc === lane.cc);
+  return `CC${lane.cc}${found ? ' ' + found.name : ''}`;
 }
 
 async function boot() {
@@ -1243,6 +1515,7 @@ async function boot() {
   const nTracks = state.project.tracks.length;
   state.hiddenTracks = new Set([...state.hiddenTracks].filter((i) => i < nTracks));
   loadTrackColors();      // 这个工程上次调过的轨道颜色
+  state.tempo = buildTempo(state.project);   // 速度轨（变速播放用）
 
   rebuildView();
   state.playheadTick = 0;
@@ -1263,6 +1536,11 @@ async function boot() {
     updatePosLabel,
     setTrackColor, trackColorHex, loadTrackColors, saveTrackColors, swatchTrackAt,
     openSwatchPop, closeSwatchPop, toggleSwatchPop, renderSwatchPop, SWATCH_PALETTE,
+    buildTempo, rateAt, ticksPerSecond, mmss, frame,
+    isClean, setClean, isExport, setExportMode, getRulerH, setCanvasExportMode,
+    laneLayout, laneLabelText, LANE_HEAD_H, LANE_MIN_H,
+    addLane, removeLane, setLaneCc, setVelocityLane, setLaneHeight, laneOf, laneTitle,
+    ccChoices, LANE_H_MIN, LANE_H_MAX,
   };
 
   // 握手：告诉后端窗口已连上（后端用它判断窗口是否真的连上了）

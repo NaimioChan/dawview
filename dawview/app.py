@@ -18,6 +18,9 @@ import threading
 import traceback
 from pathlib import Path
 
+# 固定服务端口：见 open_window() 里的说明（localStorage 按端口隔离）
+DEFAULT_PORT = 8973
+
 from .cpr_parser import parse_cpr
 from .flp_parser import parse_flp
 
@@ -100,6 +103,19 @@ def run(path: str | Path, *, width: int = 1280, height: int = 800,
     window = webui_mod.Window()
     window.set_root_folder(str(WEB_DIR))
 
+    # 固定端口：webui 默认每次随机挑一个空闲端口，而浏览器的 localStorage 是按
+    # "源"（协议 + 主机 + 端口）隔离的 —— 端口一变，用户调过的主题 / 动效 / 缩放
+    # 就全读不回来（实测三次启动分别是 25910 / 25926 / 25939）。钉住端口，
+    # 设置才真的"下次打开还能用"。被占用时退回随机端口并明确提示。
+    port = DEFAULT_PORT
+    env_port = os.environ.get("DAWVIEW_PORT")
+    if env_port and env_port.isdigit():
+        port = int(env_port)
+    try:
+        window.set_port(port)
+    except Exception as exc:                     # 老版本 webui2 没有 set_port
+        print(f"[dawview] 这个 webui2 不支持固定端口（{exc}），设置不会被记住。")
+
     def load_project(event) -> None:
         """前端 loadProject() 的后端入口（契约 v0.1，单向推送）。
 
@@ -140,6 +156,9 @@ def run(path: str | Path, *, width: int = 1280, height: int = 800,
 
     base = window.start_server("index.html").rstrip("/")
     url = f"{base}/index.html"
+    if f":{port}" not in base:
+        print(f"[dawview] 端口 {port} 没抢到（实际 {base}）—— 这次启动的设置不会记住；"
+              "关掉占用该端口的程序再启动即可。")
     print(f"[dawview] 服务已启动：{url}")
 
     if _open_app_window(url, width, height) is None:

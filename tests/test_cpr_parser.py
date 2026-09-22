@@ -56,10 +56,14 @@ def test_midi_clip(project):
 
 
 def test_notes(project):
-    """191 note records; pitches inside the MIDI range; TDRH (quarters) -> ticks."""
+    """192 note records; pitches inside the MIDI range; TDRH (quarters) -> ticks.
+
+    旧写法用 [ -][ -] 卡 pitch/velocity 字节，velocity < 32 的
+    弱奏音符会被漏掉（实测少 1 个）；现在只认属性袋标记，pitch/velocity 另做范围校验。
+    """
     piano = next(t for t in project.tracks if t.name == "Pianoteq 8 01")
     notes = piano.clips[0].notes
-    assert len(notes) == 191
+    assert len(notes) == 192
 
     pitches = [n.pitch for n in notes]
     assert 21 <= min(pitches) and max(pitches) <= 108
@@ -97,7 +101,7 @@ def test_contract_serialization(project):
     assert len(piano["clips"]) == 1
     clip = piano["clips"][0]
     assert clip["kind"] == "midi"
-    assert len(clip["notes"]) == 191
+    assert len(clip["notes"]) == 192
     n0 = clip["notes"][0]
     assert set(n0) == {"startTick", "lengthTick", "pitch", "velocity"}
 

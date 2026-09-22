@@ -141,6 +141,14 @@ body { display: flex; flex-direction: column; }
   background: var(--panel-2); cursor: pointer;
 }
 
+/* 控制器栏编辑器（设置菜单 → 控制器）：一行一个 CC 栏 */
+.menu-pane .lane-list { display: flex; flex-direction: column; gap: 4px; min-width: 168px; }
+.menu-pane .lane-row { display: flex; align-items: center; gap: 4px; }
+.menu-pane .lane-cc { flex: 1 1 auto; max-width: 190px; }
+.menu-pane .lane-del { padding: 3px 7px; }
+.menu-pane .lane-add { align-self: flex-start; }
+.menu-pane .lane-empty { color: var(--muted); font-size: 11px; }
+
 /* ------------------------------------------------------------ 时间线区 */
 
 .stage { position: relative; flex: 1 1 auto; min-height: 0; }
@@ -152,13 +160,19 @@ body { display: flex; flex-direction: column; }
   scrollbar-color: var(--border) transparent;
 }
 .tl-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+/* 导出模式：滚动条也藏起来（截图叠层时不要它；滚轮/拖动照旧可用） */
+body.export .tl-scroll { scrollbar-width: none; }
+body.export .tl-scroll::-webkit-scrollbar { display: none; }
 .tl-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
 .tl-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .tl-spacer { position: relative; }
 
+/* 画布：sticky 由浏览器（合成器）钉在滚动口上。
+   以前是 absolute + JS 每帧 translate(-scroll)，滚动事件是异步的，
+   惯性滚动时画布会被内容拖走上百像素再弹回来 —— 就是"整体上下弹动"。 */
 #tl {
-  position: absolute;
+  position: sticky;
   top: 0; left: 0;
   width: 100%; height: 100%;
   display: block;

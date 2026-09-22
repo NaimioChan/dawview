@@ -15,6 +15,14 @@
   [
    0,
    120.0
+  ],
+  [
+   7680,
+   100.0
+  ],
+  [
+   15360,
+   140.0
   ]
  ],
  "markers": [
@@ -54,13 +62,13 @@
        "startTick": 0,
        "lengthTick": 900,
        "pitch": 55,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 0,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 960,
@@ -72,13 +80,13 @@
        "startTick": 960,
        "lengthTick": 900,
        "pitch": 51,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 960,
        "lengthTick": 900,
        "pitch": 60,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 1920,
@@ -90,13 +98,13 @@
        "startTick": 1920,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 1920,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 2880,
@@ -108,13 +116,95 @@
        "startTick": 2880,
        "lengthTick": 900,
        "pitch": 53,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 2880,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 84
+       "velocity": 44
+      }
+     ],
+     "controllers": [
+      {
+       "cc": 1,
+       "name": "调制轮",
+       "points": [
+        [
+         0,
+         100
+        ],
+        [
+         480,
+         36
+        ],
+        [
+         960,
+         100
+        ],
+        [
+         1440,
+         36
+        ],
+        [
+         1920,
+         100
+        ],
+        [
+         2400,
+         36
+        ],
+        [
+         2880,
+         100
+        ],
+        [
+         3360,
+         36
+        ],
+        [
+         3840,
+         100
+        ]
+       ]
+      },
+      {
+       "cc": 64,
+       "name": "延音踏板",
+       "points": [
+        [
+         0,
+         127
+        ],
+        [
+         900,
+         0
+        ],
+        [
+         960,
+         127
+        ],
+        [
+         1860,
+         0
+        ],
+        [
+         1920,
+         127
+        ],
+        [
+         2820,
+         0
+        ],
+        [
+         2880,
+         127
+        ],
+        [
+         3780,
+         0
+        ]
+       ]
       }
      ],
      "audioFile": null
@@ -136,13 +226,13 @@
        "startTick": 3840,
        "lengthTick": 900,
        "pitch": 55,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 3840,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 4800,
@@ -154,13 +244,13 @@
        "startTick": 4800,
        "lengthTick": 900,
        "pitch": 51,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 4800,
        "lengthTick": 900,
        "pitch": 60,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 5760,
@@ -172,13 +262,13 @@
        "startTick": 5760,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 5760,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 6720,
@@ -190,13 +280,95 @@
        "startTick": 6720,
        "lengthTick": 900,
        "pitch": 53,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 6720,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 84
+       "velocity": 44
+      }
+     ],
+     "controllers": [
+      {
+       "cc": 1,
+       "name": "调制轮",
+       "points": [
+        [
+         0,
+         100
+        ],
+        [
+         480,
+         36
+        ],
+        [
+         960,
+         100
+        ],
+        [
+         1440,
+         36
+        ],
+        [
+         1920,
+         100
+        ],
+        [
+         2400,
+         36
+        ],
+        [
+         2880,
+         100
+        ],
+        [
+         3360,
+         36
+        ],
+        [
+         3840,
+         100
+        ]
+       ]
+      },
+      {
+       "cc": 64,
+       "name": "延音踏板",
+       "points": [
+        [
+         0,
+         127
+        ],
+        [
+         900,
+         0
+        ],
+        [
+         960,
+         127
+        ],
+        [
+         1860,
+         0
+        ],
+        [
+         1920,
+         127
+        ],
+        [
+         2820,
+         0
+        ],
+        [
+         2880,
+         127
+        ],
+        [
+         3780,
+         0
+        ]
+       ]
       }
      ],
      "audioFile": null
@@ -218,13 +390,13 @@
        "startTick": 7680,
        "lengthTick": 900,
        "pitch": 55,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 7680,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 8640,
@@ -236,13 +408,13 @@
        "startTick": 8640,
        "lengthTick": 900,
        "pitch": 51,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 8640,
        "lengthTick": 900,
        "pitch": 60,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 9600,
@@ -254,13 +426,13 @@
        "startTick": 9600,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 9600,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 10560,
@@ -272,13 +444,95 @@
        "startTick": 10560,
        "lengthTick": 900,
        "pitch": 53,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 10560,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 84
+       "velocity": 44
+      }
+     ],
+     "controllers": [
+      {
+       "cc": 1,
+       "name": "调制轮",
+       "points": [
+        [
+         0,
+         100
+        ],
+        [
+         480,
+         36
+        ],
+        [
+         960,
+         100
+        ],
+        [
+         1440,
+         36
+        ],
+        [
+         1920,
+         100
+        ],
+        [
+         2400,
+         36
+        ],
+        [
+         2880,
+         100
+        ],
+        [
+         3360,
+         36
+        ],
+        [
+         3840,
+         100
+        ]
+       ]
+      },
+      {
+       "cc": 64,
+       "name": "延音踏板",
+       "points": [
+        [
+         0,
+         127
+        ],
+        [
+         900,
+         0
+        ],
+        [
+         960,
+         127
+        ],
+        [
+         1860,
+         0
+        ],
+        [
+         1920,
+         127
+        ],
+        [
+         2820,
+         0
+        ],
+        [
+         2880,
+         127
+        ],
+        [
+         3780,
+         0
+        ]
+       ]
       }
      ],
      "audioFile": null
@@ -300,13 +554,13 @@
        "startTick": 11520,
        "lengthTick": 900,
        "pitch": 55,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 11520,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 12480,
@@ -318,13 +572,13 @@
        "startTick": 12480,
        "lengthTick": 900,
        "pitch": 51,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 12480,
        "lengthTick": 900,
        "pitch": 60,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 13440,
@@ -336,13 +590,13 @@
        "startTick": 13440,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 13440,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 14400,
@@ -354,13 +608,95 @@
        "startTick": 14400,
        "lengthTick": 900,
        "pitch": 53,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 14400,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 84
+       "velocity": 44
+      }
+     ],
+     "controllers": [
+      {
+       "cc": 1,
+       "name": "调制轮",
+       "points": [
+        [
+         0,
+         100
+        ],
+        [
+         480,
+         36
+        ],
+        [
+         960,
+         100
+        ],
+        [
+         1440,
+         36
+        ],
+        [
+         1920,
+         100
+        ],
+        [
+         2400,
+         36
+        ],
+        [
+         2880,
+         100
+        ],
+        [
+         3360,
+         36
+        ],
+        [
+         3840,
+         100
+        ]
+       ]
+      },
+      {
+       "cc": 64,
+       "name": "延音踏板",
+       "points": [
+        [
+         0,
+         127
+        ],
+        [
+         900,
+         0
+        ],
+        [
+         960,
+         127
+        ],
+        [
+         1860,
+         0
+        ],
+        [
+         1920,
+         127
+        ],
+        [
+         2820,
+         0
+        ],
+        [
+         2880,
+         127
+        ],
+        [
+         3780,
+         0
+        ]
+       ]
       }
      ],
      "audioFile": null
@@ -382,13 +718,13 @@
        "startTick": 15360,
        "lengthTick": 900,
        "pitch": 55,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 15360,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 16320,
@@ -400,13 +736,13 @@
        "startTick": 16320,
        "lengthTick": 900,
        "pitch": 51,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 16320,
        "lengthTick": 900,
        "pitch": 60,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 17280,
@@ -418,13 +754,13 @@
        "startTick": 17280,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 17280,
        "lengthTick": 900,
        "pitch": 63,
-       "velocity": 84
+       "velocity": 44
       },
       {
        "startTick": 18240,
@@ -436,13 +772,95 @@
        "startTick": 18240,
        "lengthTick": 900,
        "pitch": 53,
-       "velocity": 90
+       "velocity": 70
       },
       {
        "startTick": 18240,
        "lengthTick": 900,
        "pitch": 58,
-       "velocity": 84
+       "velocity": 44
+      }
+     ],
+     "controllers": [
+      {
+       "cc": 1,
+       "name": "调制轮",
+       "points": [
+        [
+         0,
+         100
+        ],
+        [
+         480,
+         36
+        ],
+        [
+         960,
+         100
+        ],
+        [
+         1440,
+         36
+        ],
+        [
+         1920,
+         100
+        ],
+        [
+         2400,
+         36
+        ],
+        [
+         2880,
+         100
+        ],
+        [
+         3360,
+         36
+        ],
+        [
+         3840,
+         100
+        ]
+       ]
+      },
+      {
+       "cc": 64,
+       "name": "延音踏板",
+       "points": [
+        [
+         0,
+         127
+        ],
+        [
+         900,
+         0
+        ],
+        [
+         960,
+         127
+        ],
+        [
+         1860,
+         0
+        ],
+        [
+         1920,
+         127
+        ],
+        [
+         2820,
+         0
+        ],
+        [
+         2880,
+         127
+        ],
+        [
+         3780,
+         0
+        ]
+       ]
       }
      ],
      "audioFile": null
@@ -461,6 +879,7 @@
      "startTick": 0,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": null
     },
     {
@@ -470,6 +889,7 @@
      "startTick": 3840,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": null
     },
     {
@@ -479,6 +899,7 @@
      "startTick": 7680,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": null
     },
     {
@@ -488,6 +909,7 @@
      "startTick": 11520,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": null
     },
     {
@@ -497,6 +919,7 @@
      "startTick": 15360,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": null
     }
    ]
@@ -517,51 +940,52 @@
        "startTick": 0,
        "lengthTick": 920,
        "pitch": 36,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 960,
        "lengthTick": 920,
        "pitch": 36,
-       "velocity": 104
+       "velocity": 86
       },
       {
        "startTick": 1920,
        "lengthTick": 920,
        "pitch": 32,
-       "velocity": 104
+       "velocity": 54
       },
       {
        "startTick": 2880,
        "lengthTick": 920,
        "pitch": 32,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 3840,
        "lengthTick": 920,
        "pitch": 39,
-       "velocity": 104
+       "velocity": 86
       },
       {
        "startTick": 4800,
        "lengthTick": 920,
        "pitch": 39,
-       "velocity": 104
+       "velocity": 54
       },
       {
        "startTick": 5760,
        "lengthTick": 920,
        "pitch": 34,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 6720,
        "lengthTick": 920,
        "pitch": 34,
-       "velocity": 104
+       "velocity": 86
       }
      ],
+     "controllers": [],
      "audioFile": null
     },
     {
@@ -575,51 +999,52 @@
        "startTick": 7680,
        "lengthTick": 920,
        "pitch": 36,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 8640,
        "lengthTick": 920,
        "pitch": 36,
-       "velocity": 104
+       "velocity": 86
       },
       {
        "startTick": 9600,
        "lengthTick": 920,
        "pitch": 32,
-       "velocity": 104
+       "velocity": 54
       },
       {
        "startTick": 10560,
        "lengthTick": 920,
        "pitch": 32,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 11520,
        "lengthTick": 920,
        "pitch": 39,
-       "velocity": 104
+       "velocity": 86
       },
       {
        "startTick": 12480,
        "lengthTick": 920,
        "pitch": 39,
-       "velocity": 104
+       "velocity": 54
       },
       {
        "startTick": 13440,
        "lengthTick": 920,
        "pitch": 34,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 14400,
        "lengthTick": 920,
        "pitch": 34,
-       "velocity": 104
+       "velocity": 86
       }
      ],
+     "controllers": [],
      "audioFile": null
     },
     {
@@ -633,51 +1058,52 @@
        "startTick": 15360,
        "lengthTick": 920,
        "pitch": 36,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 16320,
        "lengthTick": 920,
        "pitch": 36,
-       "velocity": 104
+       "velocity": 86
       },
       {
        "startTick": 17280,
        "lengthTick": 920,
        "pitch": 32,
-       "velocity": 104
+       "velocity": 54
       },
       {
        "startTick": 18240,
        "lengthTick": 920,
        "pitch": 32,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 19200,
        "lengthTick": 920,
        "pitch": 39,
-       "velocity": 104
+       "velocity": 86
       },
       {
        "startTick": 20160,
        "lengthTick": 920,
        "pitch": 39,
-       "velocity": 104
+       "velocity": 54
       },
       {
        "startTick": 21120,
        "lengthTick": 920,
        "pitch": 34,
-       "velocity": 104
+       "velocity": 118
       },
       {
        "startTick": 22080,
        "lengthTick": 920,
        "pitch": 34,
-       "velocity": 104
+       "velocity": 86
       }
      ],
+     "controllers": [],
      "audioFile": null
     }
    ]
@@ -694,6 +1120,7 @@
      "startTick": 0,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": "drums_loop.wav"
     },
     {
@@ -703,6 +1130,7 @@
      "startTick": 3840,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": "drums_loop.wav"
     },
     {
@@ -712,6 +1140,7 @@
      "startTick": 7680,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": "drums_loop.wav"
     },
     {
@@ -721,6 +1150,7 @@
      "startTick": 11520,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": "drums_loop.wav"
     },
     {
@@ -730,6 +1160,7 @@
      "startTick": 15360,
      "lengthTick": 3840,
      "notes": [],
+     "controllers": [],
      "audioFile": "drums_loop.wav"
     }
    ]
@@ -746,6 +1177,7 @@
      "startTick": 3840,
      "lengthTick": 7680,
      "notes": [],
+     "controllers": [],
      "audioFile": "vocal_take1.wav"
     },
     {
@@ -755,6 +1187,7 @@
      "startTick": 11520,
      "lengthTick": 7680,
      "notes": [],
+     "controllers": [],
      "audioFile": "vocal_take2.wav"
     }
    ]

@@ -19,6 +19,9 @@ mkdirSync(shotDir, { recursive: true });
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, 'fixture-project.json');
 const flFixture = resolve(here, 'fixture-project-fl.json');
+// 速度轨快照：任意"带复杂变速"的工程（.cpr/.flp 都行）。变速播放只有真·变速
+// 工程才验得出来，所以单独一段；没有这个快照就跳过，不报错。
+const tempoFixture = resolve(arg('--tempo-fixture', resolve(here, 'fixture-project-tempo.json')));
 const live = resolve(here, '..', 'web', 'project.json');
 if (existsSync(fixture) && TARGET.includes('8765')) {
   copyFileSync(fixture, live);
@@ -266,6 +269,62 @@ const checks = [
     };
   }],
 
+  ['导出模式：一键隐藏网格线 / 标尺 / 滚动条', async () => {
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      const c = document.getElementById('tl'), g = c.getContext('2d');
+      const sc = document.getElementById('scroll');
+      // 横竖两种滚动条都算上：竖的看宽度差、横的看高度差
+      const sbW = () => (sc.offsetWidth - sc.clientWidth) + (sc.offsetHeight - sc.clientHeight);
+      const grab = () => g.getImageData(0, 0, c.width, c.height).data.slice();
+      dv.setViewMode('arrange');
+      dv.rebuildView(); dv.paint();
+      const A = grab();
+      const off = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport() };
+      dv.setExportMode(true);
+      const B = grab();
+      let diff = 0;
+      for (let i = 0; i < A.length; i += 4) {
+        if (A[i] !== B[i] || A[i+1] !== B[i+1] || A[i+2] !== B[i+2]) diff++;
+      }
+      const on = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport(),
+                   body: document.body.className, diff };
+      dv.setExportMode(false);
+      dv.rebuildView(); dv.paint();
+      const back = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport() };
+      return { off, on, back };
+    })()`);
+    return {
+      pass: r.off.rulerH === 30 && r.off.sb > 0 && !r.off.exp
+            && r.on.rulerH === 0 && r.on.sb === 0 && r.on.exp && r.on.body.includes('export')
+            && r.on.diff > 3000            // 画面真的变了：网格 + 标尺都没了
+            && r.back.rulerH === 30 && r.back.sb > 0 && !r.back.exp,
+      detail: JSON.stringify(r),
+    };
+  }],
+
+  ['设置记忆：导出模式 + 缩放写进 localStorage，重载后照旧', async () => {
+    const saved = await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.pxPerTick = 0.11; dv.rebuildView();   // 先改缩放
+      dv.setExportMode(true);                        // 再开导出模式（这一步会落盘，把两者一起存）
+      return JSON.parse(localStorage.getItem('dawview.view') || '{}');
+    })()`);
+    await evalJs(`(() => { location.reload(); return 'reloading'; })()`);
+    await sleep(1800);
+    const back = await evalJs(`(() => {
+      const dv = window.dawview;
+      return { exp: dv.isExport(), rulerH: dv.getRulerH(), body: document.body.className,
+               px: dv.state.pxPerTick };
+    })()`);
+    const ok = saved.exportMode === true && Math.abs(saved.pxPerTick - 0.11) < 1e-9
+               && back.exp === true && back.rulerH === 0 && back.body.includes('export')
+               && Math.abs(back.px - 0.11) < 1e-9;
+    await evalJs(`(() => { const dv = window.dawview; dv.setExportMode(false); return 1; })()`);
+    await sleep(200);
+    return { pass: ok, detail: JSON.stringify({ saved: { exportMode: saved.exportMode, pxPerTick: saved.pxPerTick }, back }) };
+  }],
+
   ['配色主题：12 套（深 7 / 浅 5）变量齐全 + 对比度达标 + 切主题画布真的重画', async () => {
     const r = await evalJs(`(() => {
       const sel = document.getElementById('theme-select');
@@ -414,19 +473,28 @@ const checks = [
       const sc = document.getElementById('scroll');
       const spacer = document.getElementById('spacer');
       const c = document.getElementById('tl');
-      const contentH = parseInt(spacer.style.height);
       const before = sc.scrollTop;
       sc.scrollTop = 90;
       sc.dispatchEvent(new Event('scroll'));
       const after = sc.scrollTop;
+      // 画布由浏览器（合成器）钉在滚动口上：滚完立刻**同步**读 rect，位移必须 ≈ 0。
+      // 旧写法是 absolute + JS translate，滚动事件异步 → 画布被拖走再弹回（用户报的"惯性弹动"）。
+      const t0 = c.getBoundingClientRect().top;
+      sc.scrollTop = after + 60;
+      const moved = c.getBoundingClientRect().top - t0;
+      sc.scrollTop = after;
       // 再验证轨道名栏钉在左侧：横向滚动后仍能读到名字（画布重画而非位移）
       sc.scrollLeft = 400;
       sc.dispatchEvent(new Event('scroll'));
-      return { contentH, viewportH: sc.clientHeight, before, after,
-               transform: c.style.transform, scrollLeft: sc.scrollLeft };
+      return { spacerH: parseInt(spacer.style.height), viewportH: sc.clientHeight,
+               before, after, moved, pos: getComputedStyle(c).position,
+               range: sc.scrollHeight - sc.clientHeight, scrollLeft: sc.scrollLeft };
     })()`);
-    const scrollable = r.contentH > r.viewportH && r.after > r.before;
-    return { pass: scrollable && r.transform.includes(`${r.after}px`), detail: JSON.stringify(r) };
+    const pass = r.after > r.before              // 真的滚得动
+      && r.range === r.spacerH                   // 滚动范围 = spacer 高度（画布本身只占一屏）
+      && Math.abs(r.moved) < 1                   // 画布不被内容拖走
+      && r.pos === 'sticky';
+    return { pass, detail: JSON.stringify(r) };
   }],
   ['干净模式一键隐藏顶栏/轨道头/状态栏（H 恢复）', async () => {
     await send('Emulation.setDeviceMetricsOverride',
@@ -527,16 +595,19 @@ const checks = [
       const rect = sc.getBoundingClientRect();
       const h0 = dv.state.view.rowH;
       const sp0 = parseInt(document.getElementById('spacer').style.height);
+      const rg0 = sc.scrollHeight - sc.clientHeight;
       const wheel = (dy) => sc.dispatchEvent(new WheelEvent('wheel', {
         deltaY: dy, altKey: true, clientY: rect.top + 120, bubbles: true, cancelable: true }));
       wheel(-100);
       const h1 = dv.state.view.rowH;
       const sp1 = parseInt(document.getElementById('spacer').style.height);
+      const rg1 = sc.scrollHeight - sc.clientHeight;
       wheel(100);                        // 缩回去，别影响后面的截图
-      return { h0, h1, sp0, sp1, h2: dv.state.view.rowH };
+      return { h0, h1, sp0, sp1, rg0, rg1, h2: dv.state.view.rowH };
     })()`);
     return {
-      pass: r.h1 > r.h0 * 1.05 && r.sp1 > r.sp0 && Math.abs(r.h2 - r.h0) < 0.5,
+      pass: r.h1 > r.h0 * 1.05 && r.rg1 >= r.rg0 && r.sp1 === r.rg1
+            && Math.abs(r.h2 - r.h0) < 0.5,
       detail: JSON.stringify(r),
     };
   }],
@@ -564,7 +635,7 @@ const checks = [
       return { opened, groups, firstPane, fxPane, active, modeAfterClick, closed };
     })()`);
     return {
-      pass: r.opened && r.groups.join(',') === '显示,视图,播放,动效,配色'
+      pass: r.opened && r.groups.join(',') === '显示,视图,播放,控制器,动效,配色'
             && r.firstPane.length >= 3 && r.fxPane.includes('音符闪光') && r.active === '动效'
             && r.modeAfterClick === 'midi' && r.closed,
       detail: JSON.stringify(r),
@@ -669,6 +740,7 @@ const checks = [
         lo: v.pitchLo, hi: v.pitchHi, keys: v.pitchHi - v.pitchLo + 1,
         noteLo: v.noteLo, noteHi: v.noteHi, semiH: v.semiH,
         spacerH: parseInt(document.getElementById('spacer').style.height),
+        clientH: sc.clientHeight,
         scrollTop: Math.round(sc.scrollTop),
         notesSeen: noteBand(),        // 进视图自动滚到音符音区 → 第一屏就看得到音符
       };
@@ -681,7 +753,7 @@ const checks = [
     })()`);
     return {
       pass: r.lo === 0 && r.hi === 127 && r.keys === 128
-            && r.spacerH >= 128 * r.semiH && r.notesSeen > 0
+            && r.spacerH + r.clientH >= 128 * r.semiH && r.notesSeen > 0
             && r.keyLitTop > 50 && r.keyLitBottom > 50,
       detail: JSON.stringify(r),
     };
@@ -1084,6 +1156,144 @@ const checks = [
                                closedBefore, openedAgain, closedByEsc }),
     };
   }],
+
+  /* ---- 契约 v0.3：钢琴窗下部的力度 / CC 栏（默认不显示） ---- */
+
+  ['控制器栏默认不显示：lanes 空 -> 不占高度', async () => {
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.setViewMode('midi');
+      dv.state.lanes = [];
+      dv.rebuildView();
+      const h = document.getElementById('tl').clientHeight;
+      const lay = dv.laneLayout(dv.state.view, h);
+      return { total: lay.total, boxes: lay.boxes.length, top: lay.top, h,
+               lanes: dv.state.view.lanes.length };
+    })()`);
+    return { pass: r.total === 0 && r.boxes === 0 && r.lanes === 0 && r.top === r.h,
+             detail: JSON.stringify(r) };
+  }],
+
+  ['CC 栏的可选项来自契约 controllers', async () => {
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      const ch = dv.ccChoices();
+      return { choices: ch.map((c) => c.cc), names: ch.map((c) => c.name),
+               points: ch.map((c) => c.n),
+               raw: (dv.state.project.tracks || [])
+                 .flatMap((t) => t.clips.flatMap((c) => c.controllers || [])).length };
+    })()`);
+    if (!r.raw) return { pass: true, detail: '这个工程没有 CC 数据（跳过）' };
+    return { pass: r.choices.length > 0 && r.points.every((n) => n > 0)
+                   && r.names.every((n) => !!n),
+             detail: JSON.stringify(r) };
+  }],
+
+  ['加一栏力度 + 一栏 CC：音符区让出高度，两栏里都真画了东西', async () => {
+    // 栏里的数据是主色画的 —— 按主色做像素分类，数得出来才算真画了
+    const acc = String(await evalJs(
+      `getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()`) || '#3389d1')
+      .replace('#', '');
+    const ACC = [0, 2, 4].map((i) => parseInt(acc.slice(i, i + 2), 16));
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      const c = document.getElementById('tl');
+      const g = c.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const h = c.clientHeight;
+      const ACC = [${ACC.join(',')}];
+      const countAccent = (y, hh) => {
+        const x0 = Math.round(dv.state.view.headW * dpr);
+        const d = g.getImageData(x0, Math.round(y * dpr),
+                                 Math.max(1, c.width - x0), Math.round(hh * dpr)).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          if (Math.abs(d[i] - ACC[0]) < 32 && Math.abs(d[i + 1] - ACC[1]) < 32
+              && Math.abs(d[i + 2] - ACC[2]) < 32) n++;
+        }
+        return n;
+      };
+      dv.setViewMode('midi');
+      dv.state.lanes = [];
+      dv.rebuildView();
+      dv.paint();
+      const none = dv.laneLayout(dv.state.view, h).total;
+      const cc = (dv.ccChoices()[0] || {}).cc;
+      dv.setVelocityLane(true);
+      if (cc !== undefined) dv.addLane({ kind: 'cc', cc });
+      dv.paint();
+      const lay = dv.laneLayout(dv.state.view, h);
+      const vel = lay.boxes.find((b) => b.lane.kind === 'velocity');
+      const ccb = lay.boxes.find((b) => b.lane.kind === 'cc');
+      return { none, total: lay.total, top: lay.top, h, cc,
+               lanes: dv.state.view.lanes.length,
+               velAccent: countAccent(vel.y + 18, vel.h),
+               ccAccent: ccb ? countAccent(ccb.y + 18, ccb.h) : 0,
+               boxes: lay.boxes.map((b) => [b.lane.kind, b.lane.cc, Math.round(b.y), b.h]) };
+    })()`);
+    return { pass: r.none === 0 && r.total > 0 && r.top < r.h && r.lanes === 2
+                   && r.velAccent > 150 && r.ccAccent > 150,
+             detail: JSON.stringify(r) };
+  }],
+
+  ['栏位偏好只进 localStorage，不进数据契约', async () => {
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      const saved = JSON.parse(localStorage.getItem('dawview.view') || '{}');
+      return { lanes: saved.lanes, laneH: saved.laneH,
+               inContract: Object.prototype.hasOwnProperty.call(dv.state.project, 'lanes'),
+               jsonHasLanes: JSON.stringify(dv.state.project).includes('"lanes"') };
+    })()`);
+    return { pass: Array.isArray(r.lanes) && r.lanes.length === 2 && r.laneH > 0
+                   && !r.inContract && !r.jsonHasLanes,
+             detail: JSON.stringify(r) };
+  }],
+
+  ['设置菜单「控制器」组：力度栏勾选 + CC 编辑器 + 栏高', async () => {
+    const r = await evalJs(`(() => {
+      const grp = [...document.querySelectorAll('#menu-groups .grp')]
+        .find((b) => b.textContent === '控制器');
+      if (!grp) return { err: '没有控制器分组' };
+      grp.click();
+      const rows = [...document.querySelectorAll('#menu-pane .pane.on .row-label')].map((e) => e.textContent);
+      const box = document.querySelector('#menu-pane .pane.on input[type=checkbox]');
+      return { rows, sels: document.querySelectorAll('#menu-pane .lane-cc').length,
+               del: document.querySelectorAll('#menu-pane .lane-del').length,
+               add: !!document.querySelector('#menu-pane .lane-add'),
+               checked: box ? box.checked : null,
+               opts: [...document.querySelectorAll('#menu-pane .lane-cc option')].map((o) => o.textContent) };
+    })()`);
+    return { pass: !r.err && r.rows.includes('力度栏') && r.rows.includes('CC 曲线栏')
+                   && r.rows.includes('单栏高度') && r.sels === 1 && r.del === 1
+                   && r.add && r.checked === true,
+             detail: JSON.stringify(r) };
+  }],
+
+  ['定速工程：速度轨单点，ticksPerSecond 就是 meta.bpm', async () => {
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      const meta = dv.state.project.meta;
+      dv.state.playheadTick = 0;
+      return { points: dv.state.tempo.points, bpm: dv.state.tempo.bpmAt(10 ** 6),
+               want: (meta.bpm / 60) * meta.ppq, got: dv.ticksPerSecond(),
+               sec: dv.state.tempo.secAt(meta.ppq * 4) };
+    })()`);
+    return { pass: r.points === 1 && Math.abs(r.got - r.want) < 1e-6
+                   && Math.abs(r.sec - 4 * 60 / r.bpm) < 1e-6,
+             detail: JSON.stringify(r) };
+  }],
+
+  ['清掉控制器栏（回到默认不显示）', async () => {
+    const r = await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.lanes.slice().forEach((l) => dv.removeLane(l.id));
+      const h = document.getElementById('tl').clientHeight;
+      return { lanes: dv.state.lanes.length, total: dv.laneLayout(dv.state.view, h).total,
+               saved: JSON.parse(localStorage.getItem('dawview.view') || '{}').lanes };
+    })()`);
+    return { pass: r.lanes === 0 && r.total === 0 && Array.isArray(r.saved) && r.saved.length === 0,
+             detail: JSON.stringify(r) };
+  }],
 ];
 
 try {
@@ -1320,7 +1530,8 @@ try {
           dv.updatePosLabel();
           return document.getElementById('pos-label').textContent;
         })()`);
-        return { pass: /^3\.1\.0$/.test(label.trim()), detail: label };
+        // 标签现在带当前速度读数（v0.3 变速播放）：「3.1.0 · 173.0 BPM」
+        return { pass: /^3\.1\.0 · [\d.]+ BPM$/.test(label.trim()), detail: label };
       }],
 
       /* ---- 滚动相关的两个绘制修复（12 条轨道 + 矮视口才滚得动） ---- */
@@ -1570,6 +1781,7 @@ try {
                                    want, pal, inRange, cleared }),
         };
       }],
+
     ];
 
     for (const [name, fn] of flChecks) {
@@ -1605,8 +1817,214 @@ try {
     }
   }
 
+  // ==================== 速度轨快照（任意带变速的工程） ====================
+  // 只有真·变速工程才验得出"播放头推进速率跟着速度轨走"。生成方法：
+  //   python scripts/make-fixture.py "你的变速工程.cpr"      # 覆盖 Cubase 那份
+  //   python scripts/make-fixture.py "你的变速工程.flp" --out scripts/fixture-project-tempo.json
+  let tempoRan = 0;
+  if (existsSync(tempoFixture)) {
+    step(`速度轨快照（${tempoFixture.split(/[\\/]/).pop()}）`);
+    copyFileSync(tempoFixture, live);
+    await evalJs(`location.reload()`);
+    await sleep(2500);
+
+    const tempoChecks = [
+      ['速度轨解析成多段阶梯：点数 > 100、tick 单调、首点 0', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          const t = dv.state.tempo;
+          let mono = true;
+          for (let i = 1; i < t.ticks.length; i++) if (t.ticks[i] <= t.ticks[i - 1]) mono = false;
+          const distinct = new Set(t.bpms.map((b) => Math.round(b * 100))).size;
+          return { points: t.points, first: t.ticks[0], mono, distinct,
+                   bpm0: +t.bpmAt(0).toFixed(3), bpmMid: +t.bpmAt(t.ticks[Math.floor(t.ticks.length / 2)]).toFixed(3),
+                   total: +t.totalSec.toFixed(3), metaBpm: dv.state.project.meta.bpm };
+        })()`);
+        return { pass: r.points > 100 && r.first === 0 && r.mono && r.distinct > 20,
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['secAt / tickAtSec 互为反函数（阶梯积分自洽）', async () => {
+        const r = await evalJs(`(() => {
+          const t = window.dawview.state.tempo;
+          let worst = 0;
+          let worstTick = 0;
+          const stepN = Math.max(1, Math.floor(t.ticks.length / 50));
+          for (let i = 0; i < t.ticks.length; i += stepN) {
+            const err = Math.abs(t.tickAtSec(t.secAt(t.ticks[i])) - t.ticks[i]);
+            if (err > worst) { worst = err; worstTick = t.ticks[i]; }
+          }
+          return { worst, worstTick, points: t.points };
+        })()`);
+        return { pass: r.worst < 1e-3, detail: JSON.stringify(r) };
+      }],
+
+      ['变速播放：快段推进速率 / 慢段推进速率 ≈ 两段 BPM 之比', async () => {
+        const plan = await evalJs(`(() => {
+          const dv = window.dawview;
+          const pick = () => {
+            // 只挑"局部稳定"的候选：0.5 秒窗口内速度变化 <= 5%。
+            // Cubase 那种阶梯里能找到长平台，FL 那种密集斜坡也能（斜坡够缓）。
+            const t = dv.state.tempo;
+            const out = [];
+            for (let i = 0; i < t.ticks.length - 1; i++) {
+              const b0 = t.bpms[i];
+              const span = (b0 / 60) * t.ppq * 0.6;
+              let j = i;
+              let lo = b0;
+              let hi = b0;
+              while (j + 1 < t.ticks.length && t.ticks[j + 1] - t.ticks[i] <= span) {
+                j++;
+                lo = Math.min(lo, t.bpms[j]);
+                hi = Math.max(hi, t.bpms[j]);
+              }
+              if (hi <= lo * 1.05) out.push({ tick: t.ticks[i] + 1, bpm: b0 });
+            }
+            if (!out.length) return { fast: null, slow: null };
+            let fast = out[0];
+            let slow = out[0];
+            for (const c of out) {
+              if (c.bpm > fast.bpm) fast = c;
+              if (c.bpm < slow.bpm) slow = c;
+            }
+            return { fast, slow, candidates: out.length };
+          };
+          return pick();
+        })()`);
+        if (!plan.fast || !plan.slow || plan.fast.bpm <= plan.slow.bpm * 1.05) {
+          return { pass: true, detail: '这个工程的变速差得不够（跳过）：' + JSON.stringify(plan) };
+        }
+        // 手动喂 30 帧（16.7ms 一帧）——不依赖真实 rAF，测出来是确定的
+        const drive = (tick) => `(() => {
+          const dv = window.dawview;
+          dv.state.playing = true;
+          dv.state.playheadTick = ${tick};
+          dv.state.lastTs = 0;
+          let ts = performance.now();
+          for (let i = 0; i < 30; i++) { ts += 16.7; dv.frame(ts); }
+          dv.state.playing = false;
+          return dv.state.playheadTick - ${tick};
+        })()`;
+        const dFast = await evalJs(drive(plan.fast.tick));
+        const dSlow = await evalJs(drive(plan.slow.tick));
+        const want = plan.fast.bpm / plan.slow.bpm;
+        const got = dSlow > 0 ? dFast / dSlow : 0;
+        return { pass: dFast > 0 && dSlow > 0 && Math.abs(got - want) / want < 0.15,
+                 detail: JSON.stringify({ fast: { ...plan.fast, d: Math.round(dFast) },
+                                          slow: { ...plan.slow, d: Math.round(dSlow) },
+                                          want: +want.toFixed(3), got: +got.toFixed(3) }) };
+      }],
+
+      ['走带标签显示当前速度（变速区里会变）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          const pick = () => {
+            // 只挑"局部稳定"的候选：0.5 秒窗口内速度变化 <= 5%。
+            // Cubase 那种阶梯里能找到长平台，FL 那种密集斜坡也能（斜坡够缓）。
+            const t = dv.state.tempo;
+            const out = [];
+            for (let i = 0; i < t.ticks.length - 1; i++) {
+              const b0 = t.bpms[i];
+              const span = (b0 / 60) * t.ppq * 0.6;
+              let j = i;
+              let lo = b0;
+              let hi = b0;
+              while (j + 1 < t.ticks.length && t.ticks[j + 1] - t.ticks[i] <= span) {
+                j++;
+                lo = Math.min(lo, t.bpms[j]);
+                hi = Math.max(hi, t.bpms[j]);
+              }
+              if (hi <= lo * 1.05) out.push({ tick: t.ticks[i] + 1, bpm: b0 });
+            }
+            if (!out.length) return { fast: null, slow: null };
+            let fast = out[0];
+            let slow = out[0];
+            for (const c of out) {
+              if (c.bpm > fast.bpm) fast = c;
+              if (c.bpm < slow.bpm) slow = c;
+            }
+            return { fast, slow, candidates: out.length };
+          };
+          const plan = pick();
+          if (!plan.fast || !plan.slow) return { skip: true };
+          const read = (tick) => { dv.state.playheadTick = tick; dv.updatePosLabel();
+                                   return document.getElementById('pos-label').textContent; };
+          return { fast: read(plan.fast.tick), slow: read(plan.slow.tick),
+                   a: +plan.fast.bpm.toFixed(1), b: +plan.slow.bpm.toFixed(1) };
+        })()`);
+        if (r.skip) return { pass: true, detail: '没有局部稳定的变速段（跳过）' };
+        return { pass: r.fast.includes(`${r.a.toFixed(1)} BPM`) && r.slow.includes(`${r.b.toFixed(1)} BPM`)
+                       && r.fast !== r.slow,
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['钢琴窗下部：CC 栏画出来了（有 CC 数据才跑）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          const choices = dv.ccChoices();
+          if (!choices.length) return { skip: true };
+          const cc = choices[0].cc;
+          const c = document.getElementById('tl');
+          const g = c.getContext('2d');
+          const dpr = window.devicePixelRatio || 1;
+          const h = c.clientHeight;
+          const band = () => {
+            const d = g.getImageData(0, Math.round((h - 120) * dpr), c.width, Math.round(120 * dpr)).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) if (d[i] > 60 || d[i + 1] > 60 || d[i + 2] > 60) n++;
+            return n;
+          };
+          dv.setViewMode('midi');
+          dv.state.lanes = [];
+          dv.rebuildView();
+          dv.paint();
+          const before = band();
+          dv.addLane({ kind: 'cc', cc });
+          dv.paint();
+          const after = band();
+          const lay = dv.laneLayout(dv.state.view, h);
+          return { cc, before, after, total: lay.total, points: dv.state.view.ccs.find((e) => e.cc === cc).points.length };
+        })()`);
+        if (r.skip) return { pass: true, detail: '这个工程没有 CC 数据（跳过）' };
+        return { pass: r.total > 0 && r.after > r.before + 300,
+                 detail: JSON.stringify(r) };
+      }],
+    ];
+
+    for (const [name, fn] of tempoChecks) {
+      tempoRan++;
+      step(name);
+      try {
+        const r = await fn();
+        console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.detail ?? ''}`);
+        if (!r.pass) failed++;
+      } catch (err) {
+        console.log(`  ERROR ${err.message}`);
+        failed++;
+      }
+    }
+
+    await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.lanes = [];
+      dv.setViewMode('arrange');
+      dv.state.playheadTick = 0;
+      dv.rebuildView();
+      dv.paint();
+    })()`);
+    await sleep(300);
+    await shot('shot-tempo.png');
+
+    if (existsSync(fixture)) {          // 复原固定快照
+      copyFileSync(fixture, live);
+      await evalJs(`location.reload()`);
+      await sleep(1500);
+    }
+  }
+
   const ran = (existsSync(fixture) ? checks.length : 0)
-            + (existsSync(flFixture) ? flRan : 0);
+            + (existsSync(flFixture) ? flRan : 0)
+            + (existsSync(tempoFixture) ? tempoRan : 0);
   if (ran === 0) {
     console.log('\n0 项：没有数据快照，什么都没验证。');
     console.log('生成方法见 README「验证」一节（python scripts/make-fixture.py <工程文件>）。');

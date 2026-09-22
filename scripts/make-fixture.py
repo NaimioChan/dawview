@@ -7,7 +7,12 @@
     python scripts/make-fixture.py "我的工程.cpr"      # -> scripts/fixture-project.json
     python scripts/make-fixture.py "我的工程.flp"      # -> scripts/fixture-project-fl.json
 
-文件名是固定的（`scripts/verify.mjs` 就按这两个名字找），别改名。
+文件名默认按扩展名定（`scripts/verify.mjs` 就按这两个名字找），要别的名字用 --out：
+
+    python scripts/make-fixture.py "变速工程.cpr" --out scripts/fixture-project-tempo.json
+    node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
+
+（速度轨那一段只有真·变速工程才验得出，所以单独一份快照、单独一个开关。）
 """
 from __future__ import annotations
 
@@ -26,10 +31,19 @@ OUT_NAME = {".cpr": "fixture-project.json", ".flp": "fixture-project-fl.json"}
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    argv = sys.argv[1:]
+    out_override = None
+    if "--out" in argv:
+        i = argv.index("--out")
+        if i + 1 >= len(argv):
+            print("--out 后面要跟路径", file=sys.stderr)
+            return 2
+        out_override = Path(argv[i + 1])
+        del argv[i:i + 2]
+    if not argv:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    src = Path(sys.argv[1])
+    src = Path(argv[0])
     if not src.exists():
         print(f"找不到工程文件：{src}", file=sys.stderr)
         return 1
@@ -58,7 +72,8 @@ def main() -> int:
               default=0.0)
     project["lengthTicks"] = end + 4 * project["meta"]["ppq"]
 
-    out = ROOT / "scripts" / OUT_NAME[suffix]
+    out = out_override if out_override else (ROOT / "scripts" / OUT_NAME[suffix])
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(project, ensure_ascii=False), encoding="utf-8")
     clips = sum(len(t["clips"]) for t in tracks)
     notes = sum(len(c["notes"]) for t in tracks for c in t["clips"])

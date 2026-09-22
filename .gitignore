@@ -12,9 +12,12 @@ probe-*.png
 # 数据快照：来自真实工程（带工程名/轨道名），不入库。
 # 想跑前端验证就自己生成一份：
 #   python scripts/make-fixture.py <你的工程.cpr|.flp>
+#   python scripts/make-fixture.py <变速工程.cpr> --out scripts/fixture-project-tempo.json
 web/project.json
-scripts/fixture-project.json
-scripts/fixture-project-fl.json
+scripts/fixture-project*.json
 
 # run.bat 的本地默认工程路径（每台机器不一样）
 default-project.txt
+
+# 借来的参考工程（几十 MB，不入库）
+projects/

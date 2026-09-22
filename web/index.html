@@ -36,8 +36,9 @@
 
   <main class="stage">
     <div class="tl-scroll" id="scroll">
-      <div class="tl-spacer" id="spacer"></div>
+      <!-- 画布必须排在 spacer 前面：sticky 的布局位置才是 (0,0) -->
       <canvas id="tl"></canvas>
+      <div class="tl-spacer" id="spacer"></div>
     </div>
     <!-- 轨道显示/隐藏选择器：钉在左侧轨道栏的表头格上 -->
     <div class="tracks-picker" id="tracks-picker">
