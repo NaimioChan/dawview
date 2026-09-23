@@ -423,45 +423,25 @@ const checks = [
     };
   }],
 
-  ['webui 桥优先于 project.json 回退', async () => {
-    // 在页面脚本执行前注入假桥（模拟 webui.js 的 globalThis.webui），
-    // 桥返回一份可识别的数据；若前端正确优先用桥，标题应变成 BRIDGE-TEST
-    const injected = await send('Page.addScriptToEvaluateOnNewDocument', {
-      source: `window.__bridgeCalls = 0;
-        Object.defineProperty(window, 'webui', {
-          configurable: true,
-          get() {
-            return { call: (name) => {
-              window.__bridgeCalls++;
-              return Promise.resolve(JSON.stringify({
-                meta: { host: 'cubase', hostVersion: '15.0.30', projectName: 'BRIDGE-TEST',
-                        bpm: 76.0, timeSig: [4, 4], ppq: 480, sampleRate: 48000 },
-                tempoMap: [], markers: [],
-                tracks: [{ id: 't0', name: '桥轨', kind: 'instrument',
-                           clips: [{ id: 'c0', name: '桥片段', kind: 'midi', startTick: 0,
-                                     lengthTick: 1920, audioFile: null,
-                                     notes: [{ startTick: 0, lengthTick: 240, pitch: 60, velocity: 90 }] }] }],
-                lengthTicks: 3840, warnings: []
-              }));
-            } };
-          },
-        });`,
-    });
-    await send('Page.navigate', { url: TARGET });
-    await sleep(2000);
-    const r = await evalJs(`(() => ({
-      calls: window.__bridgeCalls,
-      src: window.dawview ? window.dawview.state.dataSource : null,
-      info: document.getElementById('proj-info').textContent,
-      status: document.getElementById('status-text').textContent,
-    }))()`);
-    // 拆掉注入的假桥并回到真实页面（截图要用真数据）
-    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: injected.identifier });
-    await send('Page.navigate', { url: TARGET });
-    await sleep(3500);
+  ['页面不依赖 webui 桥 / 后端（静态打开也能跑）', async () => {
+    // 以前这条检查是"注入假桥，断言桥优先"。改成本地服务之后没有桥了：
+    // 断言页面里既没有 webui.js 也没有 window.webui，数据仍然从 project.json 来、
+    // 界面照样渲染。同时验证没有后端时前端不会因为 /events 连不上而报错或空屏。
+    const r = await evalJs(`(() => {
+      const st = window.dawview.state;
+      return {
+        webuiGlobal: typeof window.webui,
+        webuiScripts: document.querySelectorAll('script[src*=webui]').length,
+        source: st.dataSource,
+        tracks: st.view.tracks.length,
+        status: document.getElementById('status-text').textContent,
+        bodyOk: !!document.getElementById('tl').width,
+      };
+    })()`);
     return {
-      pass: r.calls >= 1 && r.src === 'bridge' && /BRIDGE-TEST/.test(r.info)
-            && /webui 桥/.test(r.status),
+      pass: r.webuiGlobal === 'undefined' && r.webuiScripts === 0
+            && r.source === 'file' && r.tracks > 0 && r.bodyOk
+            && /project\.json/.test(r.status),
       detail: JSON.stringify(r),
     };
   }],

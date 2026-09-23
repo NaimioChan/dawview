@@ -155,22 +155,34 @@ velocity 字节逐个吻合）；**不要用 `VffO`** —— 那个字段在一�
 2. 所有 startTick 绝对时间（相对工程起点）；Note.startTick 相对 clip。
 3. 解析失败不得崩溃：单轨/单 clip 失败跳过并记 warning，其余照常显示。
 
-## 取数通道（webui 桥）
+## 取数通道（本地服务）
 
-前端优先走 webui 桥，失败才回退同目录 `project.json`（回退只为便于无头浏览器验证）。
-桥上有两个后端函数：
+数据由 `dawview/server.py` 起的一个本地 HTTP 服务提供（纯标准库，只绑 `127.0.0.1`，
+端口固定 `8973`）：
 
-| 函数 | 方向 | 说明 |
-|---|---|---|
-| `loadProject()` | 前端 → 后端 | 返回契约 JSON（见上），**唯一数据入口** |
-| `clientReady()` | 前端 → 后端 | boot 完成后的握手，后端据此判断窗口真的连上了 |
+| 路径 | 说明 |
+|---|---|
+| `/index.html`、`/app.js` … | `web/` 下的静态文件，统一 `Cache-Control: no-store` |
+| `/project.json` | 契约 JSON，**唯一数据入口**（直接来自内存，不读盘） |
+| `/health` | 存活探针，返回当前连着的页面数 |
+| `/events` | SSE 长连接：前端 boot 时连上，窗口一关就断 |
 
-### webui2 在本机的实测坑（都已在代码里规避）
+同一份 JSON 还会写进 `web/project.json`，所以不起服务、直接开页面也能看（无头验证走这条路）。
 
-- 响应必须用 `event.return_string(...)` 送回；**Python 回调的 return 值不会到前端**（实测拿到空字符串）。
-- `window.webui` 由 `webui.js` 在 DOMContentLoaded 创建，且要等 WebSocket 连上（`webui.isConnected()`）调用才有效 —— 页面必须引入 `<script src="webui.js"></script>`，前端要等到「桥存在且已连接」再取数。
-- `show()` / `show_browser()` 本机失效：`browser_exist(Edge)` 直接抛访问违规，`show()` 返回 False 后连 HTTP 服务都会一起关掉（用户只看到空白窗口）。改用 `start_server("index.html")`（只起服务、返回 `http://localhost:<port>`），窗口由 `_open_app_window()` 用浏览器 app 模式拉起（独立 profile，不碰用户主浏览器）。
-- `show()` / `is_shown()` 的返回值都不可信；进程不要用 `webui.wait()` 保活（超时即返回、服务器随之消失），改为等 `EventType.DISCONNECTED` 再退出。
+**关窗即退出**靠 `/events`：后端数着有几个页面连着，从"连过之后又归零"起算，稳定一小段
+时间（扛住刷新）就退出。用 SSE 而不是"页面定时打心跳"，是因为后台标签页和 OBS 浏览器源里的
+`setInterval` 会被浏览器节流（可慢到一分钟一次），心跳法会把"还在用"误判成"窗口关了"
+而提前退出。`--keep-open` 可以关掉这个行为。
+
+### 早期用 webui2 时踩的坑（记录备查，现在不依赖它了）
+
+- 它的 `show()` / `show_browser()` 在本机失效：`browser_exist(Edge)` 直接抛访问违规，
+  `show()` 返回 False 后连 HTTP 服务都会一起关掉（用户只看到空白窗口）。当时改成
+  `start_server()` 只起服务，窗口自己用浏览器 app 模式拉。
+- `show()` / `is_shown()` 的返回值都不可信；`webui.wait()` 不能用来保活（超时即返回、
+  服务器随之消失），当时靠 `EventType.DISCONNECTED` 判断退出。
+- 它每次启动随机挑端口，而浏览器把 `localStorage` 按"协议 + 主机 + 端口"隔离，
+  用户调过的设置读不回来；当时用 `Window.set_port()` 钉住端口。现在端口自己定，没这问题。
 
 ## 显示选项不进契约
 

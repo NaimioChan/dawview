@@ -6,7 +6,8 @@
 ![走带视图](docs/screenshot-arrange.png)
 
 纯 Python 解析（只用标准库）+ 原生 JS 前端（无构建、无 npm）。
-唯一第三方依赖是 [webui2](https://pypi.org/project/webui2/)（开窗口用；`--dev` 只解析数据，不需要它）。
+**零第三方依赖**：解析器和本地 HTTP 服务都只用标准库，窗口用系统自带的 Edge/Chrome 的
+app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东西。
 
 当前支持：
 
@@ -25,7 +26,11 @@
 ### 环境
 
 - Python 3.10+（代码里用了 `X | Y` 类型标注；实测 3.11）
-- 可选：`pip install webui2` —— 要开窗口就需要，只解析数据不用装
+- 浏览器：Windows 10/11 自带 Edge，直接可用；万一没有 Edge/Chrome 会退回系统默认浏览器（有地址栏）
+- **没有第三方包要装**，`pip install` 这一步不存在
+
+想连 Python 都不装：把 python.org 的 `python-3.11.x-embed-amd64.zip` 解压到 `python-embed/`
+（仓库根目录），`run.bat` 会优先用它 —— 这就是便携包的路子（`python-embed/` 不入库）。
 
 ### 跑起来
 
@@ -35,9 +40,20 @@
 | 拖放 | 把 `.cpr` / `.flp` 拖到 `run.bat` 上 |
 | 命令行 | `python -m dawview "路径/工程.flp"` |
 | 先看看长什么样（不用自己的工程） | `python -m dawview docs/demo-project.json` |
-| 只看解析结果、不开窗口 | 加 `--dev`（会写出 `web/project.json`） |
+| 只看解析结果、不起服务 | 加 `--dev`（会写出 `web/project.json`） |
+| 不起窗口、只起服务（给 OBS / 外部浏览器） | 加 `--no-window`（会打印服务地址） |
+| 页面关掉后服务也留着 | 加 `--keep-open`（Ctrl+C 结束） |
 
 窗口关掉时程序自动退出（不留后台进程）。
+
+### 用 OBS 浏览器源录制
+
+服务端口固定是 `8973`，所以 OBS 里配一次就行：加一个「浏览器」源，URL 填
+`http://127.0.0.1:8973/index.html`，宽高按你要的画面设。配 `--no-window` 起服务就不会多出
+一个窗口；`--keep-open` 可以让 OBS 短暂重连时不把服务带走。
+
+OBS 的浏览器源是它自己一套浏览器实例，`localStorage` 跟 app 窗口不是同一份，
+外观（主题 / 配色 / 缩放）第一次可能要重新调一遍 —— 调完它自己会记住。
 
 ## 能看什么
 
@@ -217,8 +233,8 @@
 
 ## 数据契约
 
-后端解析 → 契约 JSON → 通过 webui 桥推给前端（桥失败时前端回退读同目录 `web/project.json`，
-只为便于无头验证）。契约是**两端唯一接口**，写在 [`docs/01-data-contract.md`](docs/01-data-contract.md)：
+后端解析 → 契约 JSON → 由本地 HTTP 服务（`dawview/server.py`）发给前端；同一份 JSON 也写进
+`web/project.json`，这样不起服务、直接开页面也能看（无头验证走的就是这条路）。契约是**两端唯一接口**，写在 [`docs/01-data-contract.md`](docs/01-data-contract.md)：
 顶层 `meta / tempoMap / markers / tracks / lengthTicks`，轨道有 `kind`，
 片段有 `kind`（`midi` / `audio` / `automation` / `other`）、`notes`（含 `velocity`）和
 `controllers`（`{cc, name, points: [[tick, value], ...]}`，tick 相对片段起点，跟 `Note.startTick` 一样）。
@@ -238,7 +254,8 @@ dawview/          纯 Python 后端
   cpr_parser.py   Cubase .cpr 解析器（实证逆向，含格式注释）
   flp_parser.py   FL Studio .flp 解析器（事件流 + 播放列表记录，80/60/32 字节自适应）
   model.py        宿主无关数据模型
-  app.py          入口：解析 → 契约 JSON → webui 桥推给前端（PARSERS 按扩展名分发）
+  server.py       本地 HTTP 服务（静态文件 + /project.json + /events 长连接，纯标准库）
+  app.py          入口：解析 → 起本地服务 → 开窗口（PARSERS 按扩展名分发）
 web/              前端（原生 JS，无构建）
   timeline.js     Canvas 绘制（走带 / 钢琴窗）
   app.js          状态、交互、轨道配色、主题切换
@@ -246,28 +263,27 @@ web/              前端（原生 JS，无构建）
 docs/
   01-data-contract.md   前后端唯一接口（改契约必须两端同步）
   demo-project.json     手写的合成示例工程（README 截图 / run.bat 默认打开）
-tests/            pytest（30 项：Cubase 6 + FL 10 + 速度轨/力度/CC 14）
+tests/            pytest（48 项：Cubase 6 + FL 10 + 速度轨/力度/CC 16 + 本地服务 16）
 scripts/
-  verify.mjs       前端 CDP 验证（35 + 10 + 5 项，见下）
+  verify.mjs       前端 CDP 验证（37 + 10 + 5 项，见下）
   fx-probe.mjs     动效可见度量化（像素级差分）
   make-demo.py     重新生成 docs/demo-project.json
   make-fixture.py  从你的工程裁一份验证快照（快照不入库，见下）
-  bridge-probe.mjs webui 桥诊断
-  smoke_window.py  冒烟测试：真窗口能不能打开（打印它的本地端口）
+  smoke_window.py  冒烟测试：真窗口能不能打开（起服务 + 拉窗口，打印地址）
 run.bat            Windows 启动器
 ```
 
 ## 验证
 
 ```bash
-python -m pytest tests/ -q                       # 30 项（Cubase 6 + FL 10 + 速度轨/力度/CC 14）
+python -m pytest tests/ -q                       # 48 项（Cubase 6 + FL 10 + 速度轨/力度/CC 16 + 本地服务 16）
 
 # 前端验证：需要一个静态服务 + 一个带 CDP 的浏览器
 python -m http.server 8765 --bind 127.0.0.1 --directory web &
 "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" \
   --headless=new --remote-debugging-port=9223 \
   --user-data-dir=$LOCALAPPDATA/Temp/edge-cdp-dawview &
-node scripts/verify.mjs                          # 前端 35 项（Cubase 快照），ALL CHECKS PASSED
+node scripts/verify.mjs                          # 前端 37 项（Cubase 快照），ALL CHECKS PASSED
 node scripts/fx-probe.mjs                        # 动效可见度量化（像素级差分）
 ```
 
@@ -295,7 +311,7 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
   （第一版滚动断言就是从被测函数反推期望位置，反向验证时居然 PASS）。
 - 像素断言里半透明底色要跟**混出来的颜色**比（`0.84*底 + 0.16*片段色`），
   拿原色比会得出相反的结论。
-- 跑完 Cubase 那 35 项后，脚本会换上 FL 快照重载页面再跑 10 项（宿主/速度/采样率、
+- 跑完 Cubase 那 37 项后，脚本会换上 FL 快照重载页面再跑 10 项（宿主/速度/采样率、
   种类计数、自动化片段平涂、音频波形还在、ppq=96 标尺，以及滚动/快筛/渐变那几项）；
   有速度轨快照的话再换一次跑 5 项（速度轨解析、`secAt`/`tickAtSec` 自洽、**变速播放**、
   走带标签速度读数、CC 栏绘制）。其中两项滚动断言把视口压到 1400×320 才滚得动，测完复原。
@@ -304,8 +320,9 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
   （实测 1.381 vs 1.381）。整首套一个旧速度的实现会在这里露馅。
 - 截图产物：`.cache/shots/shot-*.png`（可用 `--shot-dir <目录>` 改到别处）。
 
-也可以直接验真实 webui 服务：`node scripts/verify.mjs --url http://localhost:<port>/index.html`；
-或者跑 `python scripts/smoke_window.py "工程.cpr"` 冒烟看真窗口能不能起来。
+本地服务本身（路由、`/project.json`、SSE 客户端计数、关窗判定、`../` 越界访问）由
+`tests/test_server.py` 覆盖，不需要浏览器；想确认这台机器上真窗口能起来，跑
+`python scripts/smoke_window.py "工程.cpr"` 冒烟。
 
 ## 已知限制（如实写）
 
@@ -314,8 +331,9 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
 - **FL 时间标记位置只取那个 u32 的低 16 位**（实测 `0x08000300` → 768），不保证对所有工程都对。
 - **解析器是实证逆向**：只在 Cubase 15.0.30 WIN64 与 FL Studio 25.2.4.5242 上验证过，
   换版本可能失效（失败会给出 warning 而不是崩）。
-- **只在 Windows 上实测过**：webui2 开窗口 + Edge/Chrome app 模式那条路；
-  解析和前端本身是跨平台的。
+- **只在 Windows 上实测过**：Edge/Chrome app 模式开窗口那条路。解析、服务、前端本身
+  是跨平台的，但没在别的系统上跑过 —— 非 Windows 上找不到 Edge/Chrome 的安装路径时
+  会退回系统默认浏览器（有地址栏）。
 - 自动化**曲线**没画（契约里预留了 `AutomationTrack`，本期只渲染色块）。
 - **力度 / CC 栏只读不能改**：这是查看器，改音符/CC 值不在范围内。
 - **Cubase 多轨归属靠"名字记录"**：音符和 CC 按"离哪条轨道的名字记录最近"归属。
@@ -329,4 +347,6 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
 ## 致谢
 
 - FLP 格式参考了 [PyFLP](https://github.com/demberto/PyFLP) 的源码（只当资料读，没有依赖它）
-- 窗口由 [webui2](https://pypi.org/project/webui2/) 提供
+- 窗口是 Edge/Chrome 的 app 模式（`--app=`），本地服务用标准库 `http.server`
+- 早期版本用 [webui2](https://pypi.org/project/webui2/) 开窗口，现已去掉：它提供的是
+  「静态服务 + 一个 JS 桥」，而那个桥只在页面启动时用一次，数据本来就有文件回退这条路

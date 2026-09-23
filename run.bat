@@ -7,13 +7,30 @@ rem Double-click to open the default project, or drag a .cpr / .flp file
 rem onto this file to open that one.
 rem Default project order: 1) default-project.txt (local, git-ignored)
 rem                        2) the bundled synthetic demo snapshot
+rem Python lookup order:   1) python-embed\python.exe   (portable package)
+rem                        2) .venv\Scripts\python.exe  (local venv)
+rem                        3) python on PATH
+rem No third-party packages are needed: parser and local HTTP server are pure
+rem standard library, and the window is Edge/Chrome in app mode (ships with
+rem Windows).
 rem NOTE: keep this file ASCII-only. cmd.exe parses .bat as GBK here and
 rem non-ASCII bytes (even in rem comments) break the script.
 rem ----------------------------------------------------------------------
 
-rem Prefer a project-local venv, fall back to whatever python is on PATH.
-set "PY=%~dp0.venv\Scripts\python.exe"
+set "PY=%~dp0python-embed\python.exe"
+if not exist "%PY%" set "PY=%~dp0.venv\Scripts\python.exe"
 if not exist "%PY%" set "PY=python"
+
+"%PY%" -c "import sys" >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo [dawview] Python 3.10+ not found.
+  echo           Install it from https://www.python.org/downloads/
+  echo           ^(tick "Add python.exe to PATH" in the installer^)
+  echo.
+  pause
+  exit /b 1
+)
 
 set "PROJ=%~1"
 if not "%PROJ%"=="" goto :run

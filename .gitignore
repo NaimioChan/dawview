@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+python-embed/          # 便携包用的内嵌 Python（run.bat 优先用它）
 
 # 验证脚本的截图产物（scripts/verify.mjs 默认写这里）
 .cache/

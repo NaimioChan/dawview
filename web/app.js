@@ -124,51 +124,32 @@ function toast(msg, ms = 2200) {
 
 /* ------------------------------------------------ 后端数据（契约 v0.1） */
 
-// webui.js 在 DOMContentLoaded 才创建 globalThis.webui，而且 WebSocket 连上
-// 之前调用后端函数是无效的 —— 必须等到"桥存在且已连接"再取数据，
-// 否则会误判"没有桥"而退回 project.json。
-async function waitForBridge(timeoutMs = 4000) {
-  const t0 = Date.now();
-  let sawBridge = false;
-  while (Date.now() - t0 < timeoutMs) {
-    const b = window.webui;
-    if (b && typeof b.call === 'function') {
-      sawBridge = true;
-      let connected = true;
-      try {
-        if (typeof b.isConnected === 'function') connected = b.isConnected();
-      } catch (e) {
-        connected = false;
-      }
-      if (connected) return b;
-    } else if (!sawBridge && Date.now() - t0 > 900) {
-      // 页面里压根没有 webui.js（例如直接用浏览器打开）—— 别白等
-      return null;
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  return null;
-}
-
+// 取数据只有一条路：本地服务（dawview/server.py）把 web/ 和 project.json 一起发过来。
+// 没跑后端、直接开 index.html 时会 fetch 失败，界面上给一句能照着做的提示。
 async function loadProject() {
-  const bridge = await waitForBridge();
-  if (bridge) {
-    try {
-      const raw = typeof bridge.call === 'function'
-        ? await bridge.call('loadProject')
-        : await window.loadProject();
-      if (raw) {
-        state.dataSource = 'bridge';
-        return JSON.parse(raw);
-      }
-    } catch (e) {
-      console.warn('[dawview] webui 桥调用失败，回退 project.json：', e);
-    }
-  }
   const res = await fetch('project.json', { cache: 'no-store' });
   if (!res.ok) throw new Error(`project.json 读取失败（HTTP ${res.status}）`);
   state.dataSource = 'file';
   return res.json();
+}
+
+// 告诉后端"页面还开着"：SSE 长连接，窗口一关连接就断，后端据此退出进程。
+// 为什么不用定时 fetch 心跳：后台标签页和 OBS 浏览器源里的 setInterval 会被
+// 浏览器节流（慢到一分钟一次），心跳法会把"还在用"误判成"窗口关了"而提前退出。
+function connectToServer() {
+  if (typeof EventSource !== 'function') return;
+  let opened = false;
+  const es = new EventSource('/events');
+  es.addEventListener('open', () => {
+    opened = true;
+    state.dataSource = 'server';     // 状态栏显示"本地服务"
+    updateStatusLine();
+  });
+  es.addEventListener('error', () => {
+    // 压根没有后端（静态打开、或别的静态服务器）：关掉，别让 EventSource 一直重连刷屏
+    if (!opened) es.close();
+  });
+  window.addEventListener('pagehide', () => es.close());
 }
 
 /* ---------------------------------------------------------------- 视图 */
@@ -1447,7 +1428,7 @@ function applyViewPrefs() {
 function updateStatusLine() {
   const v = state.view;
   const bar = Math.max(1, Math.round(v.lengthTicks / v.barTicks));
-  const src = state.dataSource === 'bridge' ? 'webui 桥' : 'project.json';
+  const src = state.dataSource === 'server' ? '本地服务' : 'project.json';
   const tempo = state.tempo || { points: 1, totalSec: 0 };
   const dur = tempo.totalSec ? ` · 时长 ${mmss(tempo.totalSec)}` : '';
   const tempoText = tempo.points > 1 ? `速度轨 ${tempo.points} 点` : `${(state.project.meta.bpm || 0).toFixed(1)} BPM 定速`;
@@ -1543,13 +1524,8 @@ async function boot() {
     ccChoices, LANE_H_MIN, LANE_H_MAX,
   };
 
-  // 握手：告诉后端窗口已连上（后端用它判断窗口是否真的连上了）
-  try {
-    const b = window.webui;
-    if (b && typeof b.call === 'function' && (!b.isConnected || b.isConnected())) {
-      b.call('clientReady');
-    }
-  } catch (e) { /* 无桥时忽略 */ }
+  // 连上本地服务（后端靠这条长连接判断"页面还开着"）
+  connectToServer();
 }
 
 boot();
