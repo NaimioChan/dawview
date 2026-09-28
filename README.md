@@ -43,17 +43,51 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 | 只看解析结果、不起服务 | 加 `--dev`（会写出 `web/project.json`） |
 | 不起窗口、只起服务（给 OBS / 外部浏览器） | 加 `--no-window`（会打印服务地址） |
 | 页面关掉后服务也留着 | 加 `--keep-open`（Ctrl+C 结束） |
+| 指定外观设置的落盘位置 | 加 `--prefs 路径`（默认 `web/prefs.json`；`--prefs none` 就只在内存里同步） |
 
-窗口关掉时程序自动退出（不留后台进程）。
+窗口关掉时程序自动退出（不留后台进程）；**OBS 的浏览器源连着时不算关**（全关才退）。
 
 ### 用 OBS 浏览器源录制
 
-服务端口固定是 `8973`，所以 OBS 里配一次就行：加一个「浏览器」源，URL 填
-`http://127.0.0.1:8973/index.html`，宽高按你要的画面设。配 `--no-window` 起服务就不会多出
-一个窗口；`--keep-open` 可以让 OBS 短暂重连时不把服务带走。
+整套流程（拖工程 → 浏览器源 → 录制）：
 
-OBS 的浏览器源是它自己一套浏览器实例，`localStorage` 跟 app 窗口不是同一份，
-外观（主题 / 配色 / 缩放）第一次可能要重新调一遍 —— 调完它自己会记住。
+1. **打开 dawview**：把工程文件（`.cpr` / `.flp`）拖到 `run.bat` 上。dawview 窗口打开，
+   同时留着一个命令行窗口，里面打印着 OBS 要填的地址：
+
+   ```
+   [dawview] 服务已启动：http://localhost:8973/index.html
+   [dawview] OBS 浏览器源填这个地址（外观 / 操作都跟着 app 窗口走）：http://localhost:8973/index.html
+   ```
+
+   （双击 `run.bat` 则是打开内置示例；想固定打开某个工程就写进 `default-project.txt`。）
+2. **在 OBS 里加「浏览器」源**：URL 填上面那行地址 `http://localhost:8973/index.html`，
+   宽高按你要的画面设（比如 1920×1080）。
+   - 填**不带** `?role=host` 的那行 —— `?role=host` 是 dawview 窗口专用的"设置以我为准"
+     标记，浏览器源带上会跟主窗口抢设置。
+   - 只是给 OBS 当画面、不想要 dawview 窗口时，加 `--no-window` 起服务
+     （`python -m dawview "工程.flp" --no-window`）。
+3. **在 dawview 窗口里调画面**：主题、轨道配色、缩放（Ctrl+滚轮）、行高、走带还是钢琴窗、
+   要不要干净模式（隐藏顶栏/轨道头/状态栏）或导出模式（隐藏网格线/标尺/滚动条）。
+   OBS 那个画面会跟着一起变，不用在 OBS 里再调一遍。
+4. **操作也在 dawview 窗口里做**：空格播放/暂停、点标尺定位 —— OBS 画面跟着走。
+   （浏览器源吃不到键鼠，中继就是补这个的：录制时不需要切到那个源上去操作。）
+5. **在 OBS 里开始录制**。dawview 页面不发声，要带配乐就在 OBS 里另加音频源。
+
+端口固定是 `8973`，所以 OBS 里配一次就一直能用；`--keep-open` 可以让 OBS 短暂重连时
+不把服务带走。关掉 dawview 窗口时如果 OBS 那个源还连着，服务会等它一起收工。
+
+**浏览器源和 dawview 窗口是联动的**（浏览器源是 OBS 自己一套浏览器实例，`localStorage`
+不通用，所以走服务端中转）：
+
+| 你要的效果 | 怎么发生的 |
+|---|---|
+| 浏览器源的外观自动和 dawview 窗口一样（主题 / 显示选项 / 轨道配色 / 缩放） | 设置存在服务端一份共享副本（`/prefs`，同时落盘到 `web/prefs.json`）。dawview 窗口（地址带 `?role=host`）以它自己的设置为准并推上去；浏览器源启动时拉下来，运行中收到广播就跟着改 |
+| 在 dawview 窗口里操作，OBS 那个画面跟着播（键盘不用切到浏览器源上） | 操作走 `/control` 中继：播放/暂停、定位、缩放、行高、视图切换、干净/导出模式、轨道显示隐藏都会广播给其它窗口执行 |
+| 播放中两边画面不飘 | 最近被操作的那个窗口当"时钟主"，每 250ms 报一次位置，别的窗口差到约 12px 才纠正一次 |
+| 用按键 / 外部工具驱动（甚至不用窗口） | `curl -d '{"action":"toggleplay"}' http://localhost:8973/control`；动作白名单在 `dawview/server.py` 的 `CONTROL_ACTIONS` |
+
+顺带：录制时最常用的几个键 —— 空格 播放/暂停、`H` 干净模式、`E` 导出模式、
+`M` 走带↔钢琴窗、`,` 打开设置菜单（主题 / 配色 / 显示开关都在里面）。完整清单见下面「操作」一节。
 
 ## 能看什么
 
@@ -276,16 +310,27 @@ run.bat            Windows 启动器
 ## 验证
 
 ```bash
-python -m pytest tests/ -q                       # 48 项（Cubase 6 + FL 10 + 速度轨/力度/CC 16 + 本地服务 16）
+python -m pytest tests/ -q                       # 73 项（Cubase 6 + FL 10 + 速度轨/力度/CC 16 + 本地服务/多窗口 41）
 
 # 前端验证：需要一个静态服务 + 一个带 CDP 的浏览器
 python -m http.server 8765 --bind 127.0.0.1 --directory web &
 "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" \
   --headless=new --remote-debugging-port=9223 \
   --user-data-dir=$LOCALAPPDATA/Temp/edge-cdp-dawview &
-node scripts/verify.mjs                          # 前端 37 项（Cubase 快照），ALL CHECKS PASSED
+node scripts/verify.mjs                          # 前端 53 项（Cubase 快照），ALL CHECKS PASSED
 node scripts/fx-probe.mjs                        # 动效可见度量化（像素级差分）
 ```
+
+多窗口联动（app 窗口 + OBS 浏览器源）单独一个端到端脚本，它**自带服务、自带两个浏览器
+实例**（各自的 `user-data-dir`，`localStorage` 不通用才算数），跑完自己收摊，不用先起东西：
+
+```bash
+node scripts/relay-verify.mjs                    # 35 项：设置共享 / 操作中继 / 播放位置校准
+node scripts/relay-verify.mjs "工程.flp"          # 换份工程跑
+node scripts/relay-verify.mjs --python py        # 指定解释器（默认 python）
+```
+
+它用一个**临时**的 `--prefs` 文件，不碰你 `web/prefs.json` 里的真实设置。
 
 `verify.mjs` 用的数据快照**不进仓库**（里面有真实工程的工程名和轨道名）。
 自己生成一份，文件名固定：
@@ -318,11 +363,15 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
 - 变速播放那一项是这么测的：在速度轨里挑一段最快的和一段最慢的，各手动喂 30 帧
   （16.7ms 一帧，不依赖真实 rAF），比较两段的 tick 推进量之比 ≈ 两段 BPM 之比
   （实测 1.381 vs 1.381）。整首套一个旧速度的实现会在这里露馅。
+- 涉及缩放的断言要**先把 `pxPerTick` 钉住**再测。导出模式那条本来读的是"滚动条被藏掉多少像素"，
+  跑的时候缩放到"内容正好装得下"就没有滚动条可藏，断言读到的 0 跟实现好坏无关（实测踩过，
+  加了 `body` / `pxPerTick` / `scrollWidth` 这些字段进 detail 才看出来）。
 - 截图产物：`.cache/shots/shot-*.png`（可用 `--shot-dir <目录>` 改到别处）。
 
-本地服务本身（路由、`/project.json`、SSE 客户端计数、关窗判定、`../` 越界访问）由
-`tests/test_server.py` 覆盖，不需要浏览器；想确认这台机器上真窗口能起来，跑
-`python scripts/smoke_window.py "工程.cpr"` 冒烟。
+本地服务本身（路由、`/project.json`、`/prefs` 共享设置、`/control` 中继、SSE 客户端计数、
+关窗判定、请求体上限、`../` 越界访问）由 `tests/test_server.py` 覆盖，不需要浏览器；
+两个窗口真的联不联得上由 `scripts/relay-verify.mjs` 覆盖，也不用你先起东西。
+想确认这台机器上真窗口能起来，跑 `python scripts/smoke_window.py "工程.cpr"` 冒烟。
 
 ## 已知限制（如实写）
 
@@ -343,6 +392,10 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
   如果某工程把 MIDI 存在这种块里，就会解析不到（给 warning，不崩）。
 - **FL 的 Tempo 自动化曲线按线性插值加密**（忽略 FL 曲线的 tension/张力参数），
   台阶密度是 1/16 拍；极端张力曲线会有肉眼不可见的偏差。
+- **多窗口联动的精度在窗口被降频时退化**：位置校准挂在 rAF 上，窗口最小化 / 被判定不可见时
+  浏览器会把它降频（降多少没逐档量过），报位置就稀了。OBS 浏览器源是 OBS 按自己的帧率刷新的，
+  画面本身照常，只是位置纠正的节奏跟着变慢。
+- **联动不跨机器**：服务只绑 `127.0.0.1`，同一台机器上的浏览器才能连上。
 
 ## 致谢
 

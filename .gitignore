@@ -17,6 +17,10 @@ probe-*.png
 web/project.json
 scripts/fixture-project*.json
 
+# 共享外观设置的落盘副本（服务端 /prefs 写的，含你的配色，每台机器各一份）
+web/prefs.json
+web/prefs.json.tmp
+
 # run.bat 的本地默认工程路径（每台机器不一样）
 default-project.txt
 

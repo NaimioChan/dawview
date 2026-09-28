@@ -40,6 +40,9 @@ const state = {
   lanes: [],               // [{id, kind:'velocity'|'cc', cc}]，默认空 = 不显示
   laneH: 84,               // 单栏绘制区高度（px），标题条另算
   tempo: null,             // 速度轨预处理结果（buildTempo），播放时按它变速
+  remoteColors: null,      // 服务端那份轨道配色 {project, map}（boot 时拉 / 拉不到就 null）
+  // 多窗口联动（OBS 浏览器源）的计数器，验证脚本读它
+  relay: { clientId: '', controls: 0, prefs: 0, plays: 0, sends: 0, lastAction: '', actions: {} },
 };
 
 const VIEW_KEY = 'dawview.view';
@@ -51,20 +54,25 @@ const LANE_H_MIN = 40;
 const LANE_H_MAX = 240;
 let laneSeq = 0;           // 栏位 id 自增（只在本页内存里用）
 
+function currentViewPrefs() {
+  return {
+    showChrome: state.showChrome, showHeads: state.showHeads,
+    showClipNames: state.showClipNames, followMode: state.followMode,
+    rowH: state.rowH, semiH: state.semiH, viewMode: state.viewMode,
+    exportMode: state.exportMode, pxPerTick: state.pxPerTick,
+    speed: state.speed, fx: state.fx,
+    hiddenTracks: [...state.hiddenTracks],
+    kindFilter: state.kindFilter,
+    lanes: state.lanes,
+    laneH: state.laneH,
+  };
+}
+
 function saveViewPrefs() {
   try {
-    localStorage.setItem(VIEW_KEY, JSON.stringify({
-      showChrome: state.showChrome, showHeads: state.showHeads,
-      showClipNames: state.showClipNames, followMode: state.followMode,
-      rowH: state.rowH, semiH: state.semiH, viewMode: state.viewMode,
-      exportMode: state.exportMode, pxPerTick: state.pxPerTick,
-      speed: state.speed, fx: state.fx,
-      hiddenTracks: [...state.hiddenTracks],
-      kindFilter: state.kindFilter,
-      lanes: state.lanes,
-      laneH: state.laneH,
-    }));
+    localStorage.setItem(VIEW_KEY, JSON.stringify(currentViewPrefs()));
   } catch (e) { /* 隐私模式忽略 */ }
+  pushPrefs();             // 顺带同步给别的窗口（OBS 浏览器源），没有后端时是空操作
 }
 
 function loadViewPrefs() {
@@ -133,9 +141,204 @@ async function loadProject() {
   return res.json();
 }
 
+/* ------------------------------------- 多窗口联动（给 OBS 浏览器源补短板） */
+
+// 一个 dawview 进程可以同时挂几个页面：app 窗口，加上 OBS 的浏览器源（那是**另一个
+// 浏览器实例**，也可能是外部浏览器）。它们的 localStorage 各是各的、键鼠也进不去对方，
+// 于是靠服务端当中转：设置走 /prefs 的共享副本，操作走 /control 的广播。
+//   POST /prefs   {view, theme, colors, client}   —— 存一份 + 广播给其它窗口
+//   POST /control {action, params, client}        —— 广播给其它窗口执行
+// 两个接口都要带上自己的 client id（SSE hello 里拿到的），服务端才不会把消息回给发起者。
+const RELAY = {
+  TICK_MS: 250,      // 播放中同步位置的间隔（毫秒）
+  TICK_PX: 12,       // 位置差多少像素才值得纠正（比这还小看不出来，就别抖）
+  MASTER_MS: 15000,  // 谁最后操作谁当播放时钟的主，这么久没动作才轮到别人
+};
+
+// 带 ?role=host 的窗口是主窗口（app.py 开的那个）：设置以它为准 ——
+// 只有它"启动时用自己的 localStorage 而不是先拉服务端那份"。
+const IS_HOST = new URLSearchParams(location.search).get('role') === 'host';
+
+let serverClientId = '';              // 服务端给的客户端 id（没有后端时是空的）
+let remoteApplying = 0;               // >0 = 正在套用远端来的动作/设置，此时不回发（防回声）
+// 上一次"本窗口主动操作"的时刻。初值必须是 -Infinity 而不是 0 ——
+// 0 会被当成"刚刚操作过"，让一个从没被碰过的页面也去发位置校准，两端互相顶。
+// 谁操作过谁就是时钟主；每发一次校准都算操作，所以播着播着一直是它。
+let lastActedAt = -Infinity;
+let lastTickSyncAt = 0;
+
+function relayReady() {
+  return !!serverClientId && remoteApplying === 0;
+}
+
+function postJson(path, obj) {
+  return fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(obj),
+    cache: 'no-store',
+  }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+}
+
+async function getJson(path) {
+  try {
+    const r = await fetch(path, { cache: 'no-store' });
+    return r.ok ? await r.json() : null;
+  } catch (e) {
+    return null;        // 静态打开页面（没有后端）时走这条路
+  }
+}
+
+// 把本窗口的设置推给服务端。内容没变服务端不会广播，所以两边互相回声也只会来回一次。
+function pushPrefs() {
+  if (!relayReady()) return;
+  postJson('/prefs', {
+    view: currentViewPrefs(),
+    theme: { name: themeName, custom: themeCustom },
+    colors: { project: colorBucketKey(), map: { ...state.trackColors } },
+    client: serverClientId,
+  });
+}
+
+// 本窗口自己存过设置没有？OBS 那个浏览器实例的 profile 是空的 —— 它要从服务端拿。
+function hasLocalPrefs() {
+  try {
+    return !!(localStorage.getItem(VIEW_KEY) || localStorage.getItem(STORE_KEY)
+      || localStorage.getItem(COLORS_KEY));
+  } catch (e) { return false; }
+}
+
+// 启动时拉一份服务端设置：主窗口自己有设置就不用被覆盖，别的页面（OBS 浏览器源）照单全收。
+async function pullPrefs() {
+  const remote = await getJson('/prefs');
+  if (!remote || !Object.keys(remote).length) return false;
+  if (IS_HOST && hasLocalPrefs()) return false;
+  return applyRemotePrefs(remote, false);
+}
+
+// 套用一份设置（boot 时来自 /prefs，运行中来自 SSE 广播）
+function applyRemotePrefs(payload, live) {
+  if (!payload || typeof payload !== 'object') return false;
+  remoteApplying++;
+  try {
+    if (payload.theme && typeof payload.theme === 'object') {
+      themeName = THEMES[payload.theme.name] ? payload.theme.name : themeName;
+      themeCustom = (payload.theme.custom && typeof payload.theme.custom === 'object')
+        ? payload.theme.custom : {};
+      applyTheme(themeName, themeCustom);
+      saveTheme({ name: themeName, custom: themeCustom });
+    }
+    if (payload.view && typeof payload.view === 'object') applyViewPrefs(payload.view);
+    if (payload.colors && typeof payload.colors === 'object') {
+      state.remoteColors = { project: payload.colors.project, map: payload.colors.map || {} };
+      mergeRemoteColors();
+    }
+  } finally {
+    remoteApplying--;
+  }
+  state.relay.prefs += 1;
+  if (live) {                       // 运行中收到广播：把视图按新设置重建一遍
+    applyHeads();
+    updateStatusLine();
+    renderTrackMenu();
+    syncSettingsUi();
+    paint();
+  }
+  return true;
+}
+
+// 服务端那份轨道配色（同一个工程才套用；换工程不串色）
+function mergeRemoteColors() {
+  const remote = state.remoteColors;
+  if (!remote || !state.project || remote.project !== colorBucketKey()) return false;
+  const map = {};
+  for (const [k, v] of Object.entries(remote.map || {})) {
+    const i = parseInt(k, 10);
+    if (Number.isInteger(i) && i >= 0 && HEX_RE.test(v)) map[i] = String(v).toLowerCase();
+  }
+  state.trackColors = map;
+  saveTrackColors();                // 写回本地；远端套用中，不会回推
+  renderTrackMenu();
+  renderSwatchPop();
+  paint();
+  return true;
+}
+
+// 可以被中继的动作表。键必须和 dawview/server.py 的 CONTROL_ACTIONS 一致
+// （服务端按白名单放行），改一边记得改另一边。
+const CONTROL_ACTIONS = {
+  play: () => setPlaying(true),
+  pause: () => setPlaying(false),
+  toggleplay: () => setPlaying(!state.playing),
+  home: () => goHome(),
+  seek: (p) => { if (isFinite(p.tick)) seekToTick(p.tick); },
+  tick: (p) => { if (isFinite(p.tick)) syncTick(p.tick); },          // 播放中校准位置
+  zoom: (p) => { if (isFinite(p.factor)) zoom(p.factor); },
+  zoomto: (p) => applyZoomTo(p),
+  fit: () => fit(),
+  setrowh: (p) => { if (isFinite(p.value)) setRowHeight(p.value); },
+  setsemih: (p) => { if (isFinite(p.value)) setSemiHeight(p.value); },
+  setlaneh: (p) => { if (isFinite(p.value)) setLaneHeight(p.value); },
+  setviewmode: (p) => setViewMode(p.mode),
+  setclean: (p) => setClean(!!p.on),
+  setexport: (p) => setExportMode(!!p.on),
+  setheads: (p) => setHeads(!!p.on),
+  setclipnames: (p) => setClipNames(!!p.on),
+  setfollow: (p) => setFollowMode(p.mode),
+  setspeed: (p) => { if (isFinite(p.value)) setSpeed(p.value); },
+  setfx: (p) => { if (p.patch && typeof p.patch === 'object') setFx(p.patch); },
+  setlanes: (p) => setLanesFromRemote(p.lanes),
+  track: (p) => setTrackVisible(p.index, !!p.on),
+  trackall: () => toggleAllTracks(),
+  sethidden: (p) => setHiddenFromRemote(p.hidden),
+};
+
+function sendControl(action, params) {
+  if (!relayReady()) return;
+  lastActedAt = performance.now();   // 谁在操作谁是播放时钟的主
+  state.relay.sends += 1;
+  postJson('/control', { action, params: params || {}, client: serverClientId });
+}
+
+function applyRemoteControl(msg) {
+  const fn = msg && CONTROL_ACTIONS[msg.action];
+  if (typeof fn !== 'function') return;
+  remoteApplying++;
+  try {
+    fn(msg.params || {});
+  } finally {
+    remoteApplying--;
+  }
+  state.relay.controls += 1;
+  state.relay.lastAction = msg.action;
+  // 按动作分别计数：验证脚本要说"收到了 play"，而 lastAction 会被紧随其后的 tick 顶掉
+  state.relay.actions[msg.action] = (state.relay.actions[msg.action] || 0) + 1;
+}
+
+// 两个窗口各跑各的 rAF，时间长了必然飘。时钟主窗口（最近被操作过的那个）定期报位置，
+// 别的窗口差得"看得出来"（约 12px）才纠正一次 —— 每帧都对齐反而会抖。
+// 没被碰过的页面一次都不发：否则两个窗口会互相顶来顶去。
+function syncTick(tick) {
+  if (!state.playing) return;
+  const tol = Math.min(600, Math.max(6, RELAY.TICK_PX / Math.max(state.pxPerTick, 0.001)));
+  if (Math.abs(state.playheadTick - tick) <= tol) return;
+  state.playheadTick = tick;
+  updatePosLabel();
+  paint();
+}
+
+function maybeSyncTick(ts) {
+  if (!relayReady() || !state.playing) return;
+  if (ts - lastActedAt > RELAY.MASTER_MS) return;      // 最近没操作过：老老实实当跟随方
+  if (ts - lastTickSyncAt < RELAY.TICK_MS) return;
+  lastTickSyncAt = ts;
+  sendControl('tick', { tick: state.playheadTick });   // 发一次就算操作一次，播着一直是主
+}
+
 // 告诉后端"页面还开着"：SSE 长连接，窗口一关连接就断，后端据此退出进程。
 // 为什么不用定时 fetch 心跳：后台标签页和 OBS 浏览器源里的 setInterval 会被
 // 浏览器节流（慢到一分钟一次），心跳法会把"还在用"误判成"窗口关了"而提前退出。
+// 同一条连接还负责收 hello（自己的 id）、control（别的窗口的操作）、prefs（设置）。
 function connectToServer() {
   if (typeof EventSource !== 'function') return;
   let opened = false;
@@ -145,11 +348,32 @@ function connectToServer() {
     state.dataSource = 'server';     // 状态栏显示"本地服务"
     updateStatusLine();
   });
+  es.addEventListener('hello', (e) => {
+    try {
+      serverClientId = JSON.parse(e.data).client || '';
+    } catch (err) { /* 消息坏了就当没有 id：只是收不到自己的回声，功能不受影响 */ }
+    state.relay.clientId = serverClientId;
+    pushPrefs();                     // 连上先把自己这份推上去（没变化服务端不会广播）
+  });
+  es.addEventListener('control', (e) => {
+    runRemote(() => applyRemoteControl(JSON.parse(e.data)));
+  });
+  es.addEventListener('prefs', (e) => {
+    runRemote(() => applyRemotePrefs(JSON.parse(e.data), true));
+  });
   es.addEventListener('error', () => {
     // 压根没有后端（静态打开、或别的静态服务器）：关掉，别让 EventSource 一直重连刷屏
     if (!opened) es.close();
   });
   window.addEventListener('pagehide', () => es.close());
+}
+
+function runRemote(fn) {
+  try {
+    fn();
+  } catch (err) {
+    console.warn('[dawview] 远端消息没处理成功：', err);
+  }
 }
 
 /* ---------------------------------------------------------------- 视图 */
@@ -286,6 +510,7 @@ function frame(ts) {
   collectHits(prev, state.playheadTick);
   pruneHits();
   followPlayhead();
+  maybeSyncTick(ts);                 // 时钟主窗口定期报位置，别的窗口跟着校准
   updatePosLabel();
   paint();
   if (state.playing) requestAnimationFrame(frame);
@@ -348,11 +573,32 @@ function followPlayhead() {
 }
 
 function setPlaying(on) {
+  const was = state.playing;
   state.playing = on;
   state.lastTs = 0;
   if (!on) state.hits = [];          // 停下就不留动效残影
   el.btnPlay.textContent = on ? '❚❚' : '▶';
   if (on) requestAnimationFrame(frame);
+  if (was !== on) {
+    state.relay.plays += 1;
+    sendControl(on ? 'play' : 'pause');   // 别的窗口（OBS 那个画面）跟着一起动
+  }
+}
+
+// 回到开头 / 定位到某个 tick：本地操作和中继过来的动作共用这两个函数
+function goHome() {
+  state.playheadTick = 0;
+  state.hits = [];
+  el.scroll.scrollLeft = 0;
+  updatePosLabel();
+  paint();
+}
+
+function seekToTick(tick) {
+  state.playheadTick = Math.max(0, Math.min(state.view.lengthTicks, Math.round(tick)));
+  state.hits = [];
+  updatePosLabel();
+  paint();
 }
 
 function updatePosLabel() {
@@ -387,7 +633,15 @@ function afterLaneChange() {
   saveViewPrefs();
   rebuildView();
   syncSettingsUi();
+  sendControl('setlanes', { lanes: state.lanes });   // 控制器栏也照搬到别的窗口
   paint();
+}
+
+// 中继过来的控制器栏（规范化逻辑和 applyViewPrefs 里那份共用）
+function setLanesFromRemote(lanes) {
+  if (!Array.isArray(lanes)) return;
+  state.lanes = normalizeLanes(lanes);
+  afterLaneChange();
 }
 
 function addLane(patch) {
@@ -423,6 +677,7 @@ function setVelocityLane(on) {
 function setLaneHeight(v) {
   state.laneH = Math.min(LANE_H_MAX, Math.max(LANE_H_MIN, Math.round(v)));
   saveViewPrefs();
+  sendControl('setlaneh', { value: state.laneH });
   syncSettingsUi();
   paint();
 }
@@ -488,13 +743,7 @@ function bindUi() {
   window.addEventListener('resize', () => { resizeSpacer(); paint(); });
 
   el.btnPlay.addEventListener('click', () => setPlaying(!state.playing));
-  el.btnHome.addEventListener('click', () => {
-    state.playheadTick = 0;
-    state.hits = [];
-    el.scroll.scrollLeft = 0;
-    updatePosLabel();
-    paint();
-  });
+  el.btnHome.addEventListener('click', () => { goHome(); sendControl('home'); });
 
   document.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
@@ -524,10 +773,8 @@ function bindUi() {
     if (sw >= 0) { e.preventDefault(); toggleSwatchPop(sw, e.clientX, e.clientY); return; }
     if (x < state.view.headW) return;
     closeSwatchPop();
-    state.playheadTick = xToTick(state.view, x);
-    state.hits = [];
-    updatePosLabel();
-    paint();
+    seekToTick(xToTick(state.view, x));
+    sendControl('seek', { tick: state.playheadTick });   // OBS 画面同步跳到这个位置
   });
 
   // 右键点色卡 = 恢复默认色
@@ -618,6 +865,7 @@ function setClean(on) {
   document.body.classList.toggle('clean', on);
   applyHeads();
   saveViewPrefs();
+  sendControl('setclean', { on: !!on });
   if (on) toast('干净模式：按 H 或 Esc 退出');
   paint();
 }
@@ -636,6 +884,7 @@ function setExportMode(on) {
   setCanvasExportMode(state.exportMode);   // timeline.js：标尺高度 0 + 不画网格线
   rebuildView();                           // 标尺没了，内容高度跟着变
   saveViewPrefs();
+  sendControl('setexport', { on: state.exportMode });
   syncSettingsUi();
   paint();
   if (state.exportMode) toast('导出模式：网格 / 标尺 / 滚动条已隐藏（快捷键 E）');
@@ -655,6 +904,7 @@ function applyHeads() {
 function setClipNames(on) {
   state.showClipNames = !!on;
   saveViewPrefs();
+  sendControl('setclipnames', { on: state.showClipNames });
   syncSettingsUi();
   paint();
 }
@@ -662,6 +912,7 @@ function setClipNames(on) {
 function setFollowMode(mode) {
   state.followMode = mode === 'center' ? 'center' : 'page';
   saveViewPrefs();
+  sendControl('setfollow', { mode: state.followMode });
   syncSettingsUi();
 }
 
@@ -669,6 +920,7 @@ function setHeads(show) {
   state.showHeads = !!show;
   applyHeads();
   saveViewPrefs();
+  sendControl('setheads', { on: state.showHeads });
   syncSettingsUi();
   paint();
 }
@@ -677,6 +929,7 @@ function setRowHeight(v) {
   state.rowH = Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, v));
   rebuildView();
   saveViewPrefs();
+  sendControl('setrowh', { value: state.rowH });
   syncSettingsUi();
   paint();
 }
@@ -685,6 +938,7 @@ function setSemiHeight(v) {
   state.semiH = Math.min(SEMI_H_MAX, Math.max(SEMI_H_MIN, v));
   if (state.view.mode === 'midi') rebuildView();
   saveViewPrefs();
+  sendControl('setsemih', { value: state.semiH });
   syncSettingsUi();
   paint();
 }
@@ -692,12 +946,14 @@ function setSemiHeight(v) {
 function setSpeed(v) {
   state.speed = v;
   saveViewPrefs();
+  sendControl('setspeed', { value: v });
   syncSettingsUi();
 }
 
 function setFx(patch) {
   Object.assign(state.fx, patch);
   saveViewPrefs();
+  sendControl('setfx', { patch });
   syncSettingsUi();
   paint();
 }
@@ -925,6 +1181,7 @@ function saveTrackColors() {
     else delete all[colorBucketKey()];
     localStorage.setItem(COLORS_KEY, JSON.stringify(all));
   } catch (e) { /* 忽略 */ }
+  pushPrefs();          // 轨道配色也同步给别的窗口
 }
 
 // 自定色，'' = 没自定（跟随主题默认色）
@@ -1084,7 +1341,16 @@ function applyTrackFilter() {
   rebuildView();
   updateStatusLine();
   renderTrackMenu();
+  sendControl('sethidden', { hidden: [...state.hiddenTracks] });   // 显示 / 隐藏照搬
   paint();
+}
+
+// 中继过来的轨道显示状态（拿的是对方算好的下标集合，不会因为筛选规则不同而分叉）
+function setHiddenFromRemote(list) {
+  if (!Array.isArray(list)) return;
+  const n = state.project ? state.project.tracks.length : 0;
+  state.hiddenTracks = new Set(list.filter((i) => Number.isInteger(i) && i >= 0 && i < n));
+  applyTrackFilter();
 }
 
 /* ------------------------------------------------ 轨道种类筛选 + 渐变上色 */
@@ -1275,6 +1541,25 @@ function zoomAt(clientX, factor) {
   rebuildView();
   el.scroll.scrollLeft = Math.max(0, tickToX(state.view, anchorTick) - viewX);
   el.zoomLabel.textContent = Math.round(state.pxPerTick / 0.04 * 100) + '%';
+  saveViewPrefs();
+  // 中继时把锚点按"视口宽度的比例"传过去：两个窗口宽度可能不一样
+  sendControl('zoomto', {
+    pxPerTick: state.pxPerTick,
+    anchorTick,
+    anchorFrac: viewX / Math.max(1, el.scroll.clientWidth),
+  });
+  paint();
+}
+
+// 中继过来的缩放：同一个 tick 落在视口里同样的相对位置上
+function applyZoomTo(p) {
+  if (!isFinite(p.pxPerTick)) return;
+  state.pxPerTick = Math.min(2.0, Math.max(0.002, p.pxPerTick));
+  rebuildView();
+  const frac = isFinite(p.anchorFrac) ? Math.min(1, Math.max(0, p.anchorFrac)) : 0.5;
+  const anchorX = tickToX(state.view, isFinite(p.anchorTick) ? p.anchorTick : 0);
+  el.scroll.scrollLeft = Math.max(0, anchorX - el.scroll.clientWidth * frac);
+  el.zoomLabel.textContent = Math.round(state.pxPerTick / 0.04 * 100) + '%';
   paint();
 }
 
@@ -1293,6 +1578,7 @@ function zoomRows(factor, clientY) {
   rebuildView();
   el.scroll.scrollTop = Math.max(0, getRulerH() + rowIdx * next - viewY);
   saveViewPrefs();
+  sendControl(midi ? 'setsemih' : 'setrowh', { value: next });
   paint();
 }
 
@@ -1311,6 +1597,7 @@ function setViewMode(mode) {
   updateStatusLine();
   syncSettingsUi();
   saveViewPrefs();
+  sendControl('setviewmode', { mode: next });
   paint();
 }
 
@@ -1331,6 +1618,8 @@ function zoom(factor) {
   rebuildView();
   el.scroll.scrollLeft = Math.max(0, tickToX(state.view, anchorTick) - headW - 120);
   el.zoomLabel.textContent = Math.round(state.pxPerTick / 0.04 * 100) + '%';
+  saveViewPrefs();
+  sendControl('zoom', { factor });     // 中继：对方按同样的倍率缩放
   paint();
 }
 
@@ -1340,6 +1629,8 @@ function fit() {
   rebuildView();
   el.scroll.scrollLeft = 0;
   el.zoomLabel.textContent = Math.round(state.pxPerTick / 0.04 * 100) + '%';
+  saveViewPrefs();
+  sendControl('fit', {});          // 中继过去的"适应窗口"由对方按自己的宽度算
   paint();
 }
 
@@ -1373,21 +1664,26 @@ function setAccent(color) {
 
 /* ------------------------------------------------------------------ 启动 */
 
-// 上次的显示选项（干净模式 / 片段名 / 跟随 / 行高 / 视图模式 / 动效）
-function applyViewPrefs() {
-  const p = loadViewPrefs();
+// 把一份设置（本地的 localStorage，或服务端/别的窗口给的）套到 state 上。
+// 参数省略时读本窗口的 localStorage；中继过来的那份由 applyRemotePrefs 传进来。
+function applyViewPrefs(p = loadViewPrefs()) {
   if (p.showClipNames === false) state.showClipNames = false;
+  else if (p.showClipNames === true) state.showClipNames = true;
   if (p.followMode === 'center') state.followMode = 'center';
+  else if (p.followMode === 'page') state.followMode = 'page';
   if (p.viewMode === 'midi') state.viewMode = 'midi';
+  else if (p.viewMode === 'arrange') state.viewMode = 'arrange';
   if (typeof p.speed === 'number' && p.speed > 0) state.speed = p.speed;
   // 缩放也记住（上限跟 zoom()/zoomAt() 保持一致）
   if (typeof p.pxPerTick === 'number' && isFinite(p.pxPerTick)) {
     state.pxPerTick = Math.min(2.0, Math.max(0.002, p.pxPerTick));
   }
-  if (p.exportMode === true) {
-    state.exportMode = true;
-    document.body.classList.add('export');
-    setCanvasExportMode(true);       // timeline.js 的全局函数（标尺 = 0、不画网格）
+  // 导出模式 / 干净模式 / 轨道头：两个方向都要处理 —— 别的窗口可能是"关掉"，
+  // 只处理 false 的话广播过来的"打开"就套不上。
+  if (typeof p.exportMode === 'boolean') {
+    state.exportMode = p.exportMode;
+    document.body.classList.toggle('export', state.exportMode);
+    setCanvasExportMode(state.exportMode);   // timeline.js 的全局函数（标尺 = 0、不画网格）
   }
   if (typeof p.rowH === 'number' && isFinite(p.rowH)) {
     state.rowH = Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, p.rowH));
@@ -1402,26 +1698,31 @@ function applyViewPrefs() {
   }
   if (typeof p.kindFilter === 'string') state.kindFilter = p.kindFilter;
   if (Array.isArray(p.lanes)) {
-    state.lanes = p.lanes
-      .filter((l) => l && (l.kind === 'velocity' || l.kind === 'cc'))
-      .map((l, i) => ({
-        id: typeof l.id === 'string' ? l.id : `lane${i + 1}`,
-        kind: l.kind,
-        cc: Number.isInteger(l.cc) ? Math.min(127, Math.max(0, l.cc)) : 0,
-      }))
-      .filter((l, i, arr) => arr.findIndex(
-        (o) => o.kind === l.kind && (l.kind !== 'cc' || o.cc === l.cc)) === i);
+    state.lanes = normalizeLanes(p.lanes);
     laneSeq = state.lanes.length;
   }
   if (typeof p.laneH === 'number' && isFinite(p.laneH)) {
     state.laneH = Math.min(LANE_H_MAX, Math.max(LANE_H_MIN, Math.round(p.laneH)));
   }
-  if (p.showHeads === false) state.showHeads = false;
-  if (p.showChrome === false) {
-    state.showChrome = false;
-    state.showHeads = false;
-    document.body.classList.add('clean');
+  if (typeof p.showHeads === 'boolean') state.showHeads = p.showHeads;
+  if (typeof p.showChrome === 'boolean') {
+    state.showChrome = p.showChrome;
+    if (!p.showChrome) state.showHeads = false;   // 干净模式连轨道头一起收
+    document.body.classList.toggle('clean', !p.showChrome);
   }
+}
+
+// 控制器栏的规范化：只认已知类型、去掉重复的 CC、补上 id
+function normalizeLanes(lanes) {
+  return lanes
+    .filter((l) => l && (l.kind === 'velocity' || l.kind === 'cc'))
+    .map((l, i) => ({
+      id: typeof l.id === 'string' ? l.id : `lane${i + 1}`,
+      kind: l.kind,
+      cc: Number.isInteger(l.cc) ? Math.min(127, Math.max(0, l.cc)) : 0,
+    }))
+    .filter((l, i, arr) => arr.findIndex(
+      (o) => o.kind === l.kind && (l.kind !== 'cc' || o.cc === l.cc)) === i);
 }
 
 // 状态栏那行统计：随视图模式变（走带看轨道/片段，钢琴窗看音符/音域）
@@ -1495,7 +1796,12 @@ async function boot() {
   // 上次记住的"隐藏轨道"按这次工程的轨道数剪一遍（换了工程，下标可能越界）
   const nTracks = state.project.tracks.length;
   state.hiddenTracks = new Set([...state.hiddenTracks].filter((i) => i < nTracks));
+  // 服务端那份共享设置（OBS 浏览器源就是靠它自动长得跟 app 窗口一样）：
+  // 要在 rebuildView 之前套用（视图模式 / 行高 / 干净模式都影响这一帧怎么画）。
+  await pullPrefs();
+  state.hiddenTracks = new Set([...state.hiddenTracks].filter((i) => i < nTracks));
   loadTrackColors();      // 这个工程上次调过的轨道颜色
+  mergeRemoteColors();    // 服务端那份（有的话以它为准）
   state.tempo = buildTempo(state.project);   // 速度轨（变速播放用）
 
   rebuildView();
@@ -1522,6 +1828,14 @@ async function boot() {
     laneLayout, laneLabelText, LANE_HEAD_H, LANE_MIN_H,
     addLane, removeLane, setLaneCc, setVelocityLane, setLaneHeight, laneOf, laneTitle,
     ccChoices, LANE_H_MIN, LANE_H_MAX,
+    // 多窗口联动（OBS）：验证脚本用这些，外面也能拿它们手动发消息
+    setTheme, setAccent, applyViewPrefs, applyRemotePrefs, applyRemoteControl,
+    CONTROL_ACTIONS, RELAY, sendControl, pushPrefs, pullPrefs, currentViewPrefs,
+    mergeRemoteColors, applyZoomTo, setLanesFromRemote, setHiddenFromRemote,
+    goHome, seekToTick, syncTick, maybeSyncTick, normalizeLanes,
+    getClientId: () => serverClientId,
+    isHost: () => IS_HOST,
+    hasLocalPrefs,
   };
 
   // 连上本地服务（后端靠这条长连接判断"页面还开着"）

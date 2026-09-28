@@ -65,9 +65,23 @@ def write_snapshot(payload: dict, web_dir: Path = WEB_DIR) -> Path:
     return out
 
 
+def prefs_target(prefs: str | None) -> Path | None:
+    """外观设置落盘到哪儿：默认 web/prefs.json；传 none/off 就只在内存里同步。
+
+    单独开这个口子是为了验证（用临时文件，不碰用户那份设置）和便携安装
+    （整个目录拷走时把设置放在数据目录里）。
+    """
+    if prefs is None:
+        return WEB_DIR / "prefs.json"
+    if prefs.strip().lower() in ("", "none", "off", "-"):
+        return None
+    return Path(prefs)
+
+
 def run(path: str | Path, *, width: int = 1280, height: int = 800,
         dev: bool = False, port: int | None = None,
-        keep_open: bool = False, no_window: bool = False) -> int:
+        keep_open: bool = False, no_window: bool = False,
+        prefs: str | None = None) -> int:
     """解析工程并起本地服务 + 打开窗口。dev=True 时只写快照，不起服务。"""
     try:
         payload = parse_any(path)
@@ -100,21 +114,26 @@ def run(path: str | Path, *, width: int = 1280, height: int = 800,
             want = int(env_port)
 
     try:
-        server = LocalServer(payload, WEB_DIR, port=want)
+        server = LocalServer(payload, WEB_DIR, port=want,
+                             prefs_path=prefs_target(prefs))
     except OSError as exc:
         print(f"[dawview] 端口 {want} 用不了（{exc.strerror or exc}），换随机端口。\n"
               "          注意：换端口后浏览器里的设置（主题 / 配色 / 缩放）读不回来，"
               "OBS 浏览器源也要改成下面这个新地址。", file=sys.stderr)
-        server = LocalServer(payload, WEB_DIR, port=0)
+        server = LocalServer(payload, WEB_DIR, port=0,
+                             prefs_path=prefs_target(prefs))
     server.start()
     url = server.url
-    print(f"[dawview] 服务已启动：{url}")
+    # flush：stdout 走管道时是块缓冲的，别人（脚本 / OBS 的启动器）要立刻看到地址
+    print(f"[dawview] 服务已启动：{url}", flush=True)
+    print(f"[dawview] OBS 浏览器源填这个地址（外观 / 操作都跟着 app 窗口走）：{url}", flush=True)
 
+    # 窗口开带 ?role=host 的地址：它是"主窗口"，设置以它为准，并把自己那份推给服务端
     if no_window:
         print("[dawview] --no-window：没开窗口。浏览器或 OBS 浏览器源指向上面这个地址即可。")
-    elif _open_app_window(url, width, height) is None:
+    elif _open_app_window(server.host_url, width, height) is None:
         print("[dawview] 没找到 Edge/Chrome，用系统默认浏览器打开（会有地址栏）")
-        webbrowser.open(url)
+        webbrowser.open(server.host_url)
 
     # 第一个页面连上来之前不能判定"窗口关了"，所以这里等（最多 20 秒只是提示）。
     if not server.wait_for_client(20):
@@ -201,10 +220,14 @@ def main(argv: list[str] | None = None) -> int:
                     help="不起窗口，只起服务（给 OBS 浏览器源 / 外部浏览器用）")
     ap.add_argument("--keep-open", action="store_true",
                     help="页面关掉后服务继续跑，Ctrl+C 才退出")
+    ap.add_argument("--prefs", default=None, metavar="PATH",
+                    help="外观设置（主题 / 显示选项 / 轨道配色）的落盘位置，"
+                         "默认 web/prefs.json；传 none 就只在内存里同步")
     args = ap.parse_args(argv)
     try:
         return run(args.project, width=args.width, height=args.height, dev=args.dev,
-                   port=args.port, keep_open=args.keep_open, no_window=args.no_window)
+                   port=args.port, keep_open=args.keep_open, no_window=args.no_window,
+                   prefs=args.prefs)
     except KeyboardInterrupt:
         print("\n[dawview] 收到中断，退出")
         return 0

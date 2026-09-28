@@ -192,6 +192,8 @@ function applyTheme(name, custom) {
 
 function saveTheme(state) {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* 隐私模式忽略 */ }
+  // 主题也同步给别的窗口（OBS 浏览器源）；没有后端 / 初始化早期是空操作
+  if (typeof pushPrefs === 'function') pushPrefs();
 }
 
 function loadTheme() {

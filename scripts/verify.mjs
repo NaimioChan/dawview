@@ -278,9 +278,16 @@ const checks = [
       const sbW = () => (sc.offsetWidth - sc.clientWidth) + (sc.offsetHeight - sc.clientHeight);
       const grab = () => g.getImageData(0, 0, c.width, c.height).data.slice();
       dv.setViewMode('arrange');
+      // 先钉住缩放：内容必须比视口宽，才谈得上"滚动条被藏掉"。
+      // 放开跑的话内容可能正好装得下（两种状态都没滚动条），这条就没法判断了。
+      dv.state.showHeads = true;
+      dv.state.pxPerTick = 0.2;
       dv.rebuildView(); dv.paint();
       const A = grab();
-      const off = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport() };
+      const off = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport(),
+                    body: document.body.className, px: dv.state.pxPerTick,
+                    size: [sc.scrollWidth, sc.clientWidth, sc.scrollHeight, sc.clientHeight],
+                    heads: dv.state.showHeads };
       dv.setExportMode(true);
       const B = grab();
       let diff = 0;
@@ -291,7 +298,9 @@ const checks = [
                    body: document.body.className, diff };
       dv.setExportMode(false);
       dv.rebuildView(); dv.paint();
-      const back = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport() };
+      const back = { rulerH: dv.getRulerH(), sb: sbW(), exp: dv.isExport(),
+                     body: document.body.className,
+                     size: [sc.scrollWidth, sc.clientWidth, sc.scrollHeight, sc.clientHeight] };
       return { off, on, back };
     })()`);
     return {
