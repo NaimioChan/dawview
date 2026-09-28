@@ -2219,7 +2219,7 @@ try {
                  detail: JSON.stringify(t) };
       }],
 
-      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 每轨 6 段 / 608 音符）', async () => {
+      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 1064 音符）', async () => {
         const d = await evalJs(`(() => {
           const s = window.dawview.state.project, tk = {}, ck = {};
           let notes = 0;
@@ -2235,7 +2235,7 @@ try {
         // 完整工程是 31 轨 / 44 MIDI 片段 / 548 音频片段 / 2502 音符；
         // 快照按 make-fixture 的规则只留每类 3 轨、每轨最多 6 个片段
         return { pass: d.tracks === 9 && d.tk.instrument === 3 && d.tk.audio === 3
-                      && d.tk.bus === 3 && d.ck.midi === 6 && d.ck.audio === 18 && d.notes === 608,
+                      && d.tk.bus === 3 && d.ck.midi === 14 && d.ck.audio === 18 && d.notes === 1064,
                  detail: JSON.stringify(d) };
       }],
 
@@ -2250,23 +2250,29 @@ try {
                  detail: JSON.stringify(r) };
       }],
 
-      ['Bitwig 音频片段落到了对的轨道上（采样名 = 轨道名）', async () => {
+      ['Bitwig 片段归到对的轨道上（乐器轨的音区 / 音频轨的采样名各自对上）', async () => {
         const r = await evalJs(`(() => {
           const s = window.dawview.state.project;
-          const files = (n) => [...new Set(((s.tracks.find((t) => t.name === n) || {}).clips || [])
-                                          .map((c) => c.audioFile))];
-          return { hat: files('KSHMR_Acoustic_Hat_Loop_13_120'),
-                   ride: files('KSHMR_Acoustic_Ride_01'),
-                   counts: s.tracks.map((t) => t.clips.length) };
+          const t = (n) => s.tracks.find((x) => x.name === n) || { clips: [] };
+          const range = (n) => {
+            const ps = t(n).clips.flatMap((c) => (c.notes || []).map((x) => x.pitch));
+            return ps.length ? [Math.min(...ps), Math.max(...ps)] : [];
+          };
+          return { guitarT: range('Ample Guitar T'), bass: range('Ample Bass J'),
+                   kick: [...new Set(t('DS_SPP2_kick_one_shot_acoustic_optimized')
+                                     .clips.map((c) => c.audioFile))],
+                   tamb: [...new Set(t('KSHMR_Tambourine_02').clips.map((c) => c.audioFile))] };
         })()`);
-        // 快照里只留了前 3 条音频轨；每条轨的片段都必须是它自己的那个采样文件
-        return { pass: JSON.stringify(r.hat) === JSON.stringify(['KSHMR_Acoustic_Hat_Loop_13_120.wav'])
-                      && JSON.stringify(r.ride) === JSON.stringify(['KSHMR_Acoustic_Ride_01.wav'])
-                      && r.counts.filter((n) => n === 6).length >= 3,
+        // 快照里 3 条乐器轨各是一把吉他 / 贝斯（音区要合常理），3 条音频轨是鼓组轨
+        // （只有音频片段；它们是"采样器重采样"，轨道名和采样文件名不同名）
+        return { pass: r.guitarT[0] >= 36 && r.guitarT[1] <= 78
+                      && r.bass[0] >= 36 && r.bass[1] <= 60
+                      && JSON.stringify(r.kick) === JSON.stringify(['KSHMR Acoustic Kick 12 - Hard.wav'])
+                      && JSON.stringify(r.tamb) === JSON.stringify(['KSHMR_Tambourine_01.wav']),
                  detail: JSON.stringify(r) };
       }],
 
-      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨 footer 取值，快照里 40..96）', async () => {
+      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨 footer 取值，快照里 37..96）', async () => {
         const r = await evalJs(`(() => {
           const dv = window.dawview;
           dv.setViewMode('midi');
@@ -2279,8 +2285,8 @@ try {
           return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
                    min: Math.min(...pitches), max: Math.max(...pitches) } ;
         })()`);
-        // 快照里是吉他轨的 608 个音符（音高 40..96）-> 音区留 2 个半音余量
-        return { pass: r.n === 608 && r.lo === 38 && r.hi === 98,
+        // 快照里是 3 条乐器轨的 1064 个音符（音高 37..96）-> 音区留 2 个半音余量
+        return { pass: r.n === 1064 && r.lo === 35 && r.hi === 98,
                  detail: JSON.stringify(r) };
       }],
     ];

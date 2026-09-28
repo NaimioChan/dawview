@@ -234,8 +234,8 @@ def test_real_project():
     tracks = r["tracks"]
     kinds = [t["kind"] for t in tracks]
     assert len(tracks) == 31
-    assert kinds.count("instrument") == 15         # 11 条乐器轨 + 4 条鼓组混合轨（有 MIDI 片段）
-    assert kinds.count("audio") == 12              # 12 条音频轨
+    assert kinds.count("instrument") == 11         # 11 条乐器轨（0x288）都有 MIDI 片段
+    assert kinds.count("audio") == 16              # 4 条鼓组混合轨（只有音频片段）+ 12 条音频轨
     assert kinds.count("bus") == 4                 # 3 条 FX 轨 + Master
     assert tracks[0]["name"] == "Ample Guitar SJ"
     assert tracks[-1]["name"] == "Master"
@@ -247,6 +247,10 @@ def test_real_project():
     audio = [c for c in clips if c["kind"] == "audio"]
     assert len(midi) == 44
     assert len(audio) == 548
+    # 文档里的片段"组"是 11 个 MIDI 组 + 16 个音频组，组下标 ≠ 轨道下标（中间夹着 4 个
+    # 空组 = FX 轨 / Master）。归轨靠"能放这种片段的轨道"顺序：乐器轨 11 条、混合轨 16 条。
+    assert [len(t["clips"]) for t in tracks].count(0) == 4        # 只有 FX 轨 / Master 没片段
+    assert all(c["kind"] == "audio" for t in tracks[11:15] for c in t["clips"])
 
     # 吉他轨：复制粘贴到 7 / 40 / 72 / 104 / 136 / 168 拍
     guitar = tracks[0]
@@ -266,7 +270,14 @@ def test_real_project():
     assert min(by_track["Ample Guitar SJ"]) == 40                  # 吉他 40..96
     assert max(by_track["Ample Guitar SJ"]) <= 96
     assert len(set(by_track["Ample Guitar SJ"])) >= 12
-    assert 68 <= min(by_track["KSHMR_Tambourine_02"]) <= 92        # 铃鼓在打击乐音区
+    assert 36 <= min(by_track["Ample Guitar T"]) <= 40             # 吉他轨 37..75
+    assert 70 <= max(by_track["Ample Guitar T"]) <= 78
+    assert 36 <= min(by_track["Ample Bass J"]) <= 41               # 贝斯轨 39..58
+    assert 55 <= max(by_track["Ample Bass J"]) <= 60
+    assert 78 <= min(by_track["Pianoteq 6"]) <= 82                 # 钢琴 80..99
+    # 4 条鼓组混合轨在 Bitwig 里只有音频片段（用户确认），MIDI 片段不该挂到它们身上
+    for t in tracks[11:15]:
+        assert not [n for c in t["clips"] for n in c["notes"]], t["name"]
     assert not any("没有音高轨 footer" in w for w in r["warnings"])
     # 音符位置基本落在 1/32 网格上：实测 2502 个里只有 9 个是离网格的
     # （6 个 -1/8 拍的负起点 + 吉他轨上 3 个手拖过的小数起点）
@@ -292,6 +303,8 @@ def test_real_project():
     assert counts["KSHMR_Acoustic_Hat_Loop_13_120"] == 16              # 帽子循环摆 16 遍
     assert counts["KSHMR Crash 02"] == 4                               # 4 次 crash
     assert counts["KSHMR Acoustic Fill 128BPM 10"] == 2                # 2 个 fill
-    assert len(audio) == sum(counts.values()) + 309                    # 其余在 4 条鼓组轨上
+    assert counts["DS_SPP2_kick_one_shot_acoustic_optimized"] == 151   # 4 条鼓组轨摆得最密
+    assert counts["KSHMR_Tambourine_02"] == 63
+    assert sum(counts.values()) == 548                                 # 16 条轨全在这里
 
     assert r["lengthTicks"] == 216.0 * 480

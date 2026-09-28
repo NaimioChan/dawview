@@ -44,11 +44,14 @@ meta 里有用的是：application_version_name（宿主版本）、creator、re
     0x42 = 音符轨/lane  0x66 = MIDI 音符(2502)  0xee = 音频片段  0xd4 = 音频样本记录
     0x43 = 片段端点标记  0x108 / 0x203 / 0x7d / 0x60b(1，DUR=208 拍 = 工程末尾) 未认出来
 **片段实例**（走带上的片段，含复制粘贴出来的副本）不走"带头标记的元素"那条路：
-文档里每条轨道有一份"片段列表头"字段 (0x238, tag 0x09)（31 轨 31 份，顺序同摘要），
+文档里每条轨道有一份"片段列表头"字段 (0x238, tag 0x09)（31 轨 31 份），
 每个片段实例带 (0x288, tag 0x09, 0xbf/0x105)；按"离它最近的、排在它前面的列表头"归轨。
 实测：11 个片段内容对象 → **44 个 MIDI 片段实例 + 548 个音频片段实例**。
-乐器段的列表头逐轨一份（没片段的轨也是空的）；音频段是"能放音频的轨按顺序一份"，
-所以音频段按摘要里混合轨（class 0x287）的顺序对齐。
+**组下标 ≠ 轨道下标**：文档里 MIDI 组在前（实测落在第 0、5..14 个列表头下）、
+音频组在后（第 15..30 个），中间/前面夹着 4 个"空组"（FX 轨和 Master 本来就没片段）。
+所以归轨按"能放这种片段的轨道"顺序对齐：**MIDI 组 → 摘要里 class 0x288 的乐器轨（各 11 个）**、
+**音频组 → class 0x287 的混合轨（各 16 个）**；数量对不上就退回按列表头下标并写 warning。
+（只按"列表头下标 = 轨道下标"会让 MIDI 片段整体错 4 行 —— 用户就是照 Bitwig 发现的。）
 音频片段的采样名只在**每组第一段的样本记录**里出现，后面的记录没有 → 顺着往前补。
 嵌入的**摘要文档**（meta 的 "structure" blob）：只有轨道清单，写成
     (0xace, tag 0x12, class 0x288) / [u32 0][u32 class] + (0xad1, utf8 轨道名)
@@ -56,8 +59,8 @@ class：0x288 = 乐器轨  0x287 = 音频轨  0x28a = FX 返回轨  0x28b = Mast
 摘要里第一个对象是工程根本身（class 0x283，名字 "Project"），不算轨道。
 
 ======================= 已知缺口 =======================
-- 音频片段的轨道归属：乐器段按片段列表头逐轨对齐（可靠）；音频段按"混合轨顺序"对齐，
-  组数与混合轨数对不上时退回按列表头顺序并在 warnings 里说明。
+- 片段归轨按"能放这种片段的轨道"顺序（MIDI→乐器轨、音频→混合轨），组数对不上时退回
+  按片段列表头下标并在 warnings 里说明；文档里那 4 个空组（FX 轨 / Master）不参与对齐。
 - class 0x43 / 0x108 / 0x203 / 0x7d 的语义没认出来（0x43 成对出现在音频样本前后，
   疑似淡入淡出端点），这些数据不进契约。
 - 拍号没找到存放处，恒按 4/4 给出（warnings 里说明）。
@@ -125,6 +128,7 @@ F_PROJECT_NAME = 0x44
 # 都是它）；0x28a/0x28b = 总线。混合轨按**实际放了什么片段**再定 kind（见 parse 结尾）。
 TRACK_KIND = {0x288: "instrument", 0x287: "midi", 0x28A: "bus", 0x28B: "bus"}
 HYBRID_CLASS = 0x287         # 混合轨：既能放 MIDI 片段也能放音频片段
+INSTRUMENT_CLASS = 0x288     # 乐器轨
 ROOT_CLASS = 0x283          # 摘要里第一个对象 = 工程根，不是轨道
 
 PPQ = 480                   # dawview 的 tick 分辨率（Bitwig 内部一律存"拍"）
@@ -544,18 +548,25 @@ def parse_bwproject(path: str | Path) -> Project:
     clip_clips: list[Clip] = []
     clip_offs: list[int] = []
 
-    # 音频片段的轨道归属：文档里 MIDI 片段组在前、音频片段组在后，音频组按顺序对应
-    # 摘要里那些"能放音频"的混合轨（实测 16 组 / 16 条，逐条对得上：踢鼓组、帽子循环、
-    # 8 小节循环……）。数量对不上就退回按片段列表头顺序，并留一条警告。
+    # 片段组的轨道归属：**组下标 ≠ 轨道下标** —— 文档里还夹着 4 个"空组"（实测是 FX 轨和
+    # Master 的，它们本来就没片段），所以按"能放这种片段的轨道"的顺序对齐：
+    #   MIDI 片段组 → 摘要里 class 0x288 的乐器轨（各 11 个）
+    #   音频片段组 → 摘要里 class 0x287 的混合轨（各 16 个）
+    # 数量对不上就退回按片段列表头下标，并留一条警告。
+    # 实测依据（用户工程）：第 2、3 条 Ample 轨是有 MIDI 片段的、4 条鼓组轨只有音频片段、
+    # 16 个音频组的采样名逐条对上 16 条混合轨 —— 只按"列表头下标 = 轨道下标"会整体错 4 行。
+    midi_owners = [i for i, c in enumerate(raw_cls) if c == INSTRUMENT_CLASS]
     audio_owners = [i for i, c in enumerate(raw_cls) if c == HYBRID_CLASS]
-    audio_slots = sorted({si for _h, kind, si in clip_objs if kind == "audio"})
-    audio_map: dict[int, int] = {}
-    if audio_slots and len(audio_slots) == len(audio_owners):
-        audio_map = {si: audio_owners[k] for k, si in enumerate(audio_slots)}
-    elif audio_slots:
-        proj.warnings.append(
-            f"音频片段组（{len(audio_slots)}）与混合轨（{len(audio_owners)}）数量对不上，"
-            "音频片段按片段列表头顺序归轨")
+    slot_map: dict[tuple[str, int], int] = {}
+    for _kind, _owners in (("midi", midi_owners), ("audio", audio_owners)):
+        ss = sorted({si for _h, k2, si in clip_objs if k2 == _kind})
+        if ss and len(ss) == len(_owners):
+            for k3, si3 in enumerate(ss):
+                slot_map[(_kind, si3)] = _owners[k3]
+        elif ss:
+            proj.warnings.append(
+                f"{_kind} 片段组（{len(ss)}）与该类轨道（{len(_owners)}）数量对不上，"
+                "片段按片段列表头顺序归轨")
 
     for k, (h, kind, si) in enumerate(clip_objs):
         stop = clip_objs[k + 1][0] if k + 1 < len(clip_objs) else min(h + 4096, len(d))
@@ -569,7 +580,7 @@ def parse_bwproject(path: str | Path) -> Project:
         clip_seq += 1
         clip_clips.append(clip)
         clip_offs.append(h)
-        ti = audio_map.get(si, si) if kind == "audio" else si
+        ti = slot_map.get((kind, si), si)
         if 0 <= ti < len(tracks):
             tracks[ti].clips.append(clip)
         else:
