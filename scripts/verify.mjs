@@ -2250,7 +2250,7 @@ try {
                  detail: JSON.stringify(r) };
       }],
 
-      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨取值，快照里 58..96）', async () => {
+      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨 footer 取值，快照里 37..96）', async () => {
         const r = await evalJs(`(() => {
           const dv = window.dawview;
           dv.setViewMode('midi');
@@ -2263,8 +2263,8 @@ try {
           return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
                    min: Math.min(...pitches), max: Math.max(...pitches) };
         })()`);
-        // 快照里音高 58..96（完整工程 58..99）-> 音区留 2 个半音余量
-        return { pass: r.n === 1064 && r.lo === 56 && r.hi === 98,
+        // 快照里音高 37..96（完整工程 37..99）-> 音区留 2 个半音余量
+        return { pass: r.n === 1064 && r.lo === 35 && r.hi === 98,
                  detail: JSON.stringify(r) };
       }],
     ];

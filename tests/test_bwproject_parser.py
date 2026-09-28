@@ -212,7 +212,18 @@ def test_real_project():
     notes = [n for t in midi for c in t["clips"] for n in c["notes"]]
     assert len(notes) == 2502
     assert all(0 <= n["pitch"] <= 127 and 1 <= n["velocity"] <= 127 for n in notes)
-    assert len({n["pitch"] for n in notes}) > 5             # 音高不是兜底值
+    # 音高：一条轨一个音区（音高写在音高轨 footer 上，按"后面第一个 footer"取）。
+    # 每个有音符的片段都得有一把真正的音高，不能被兜底成一条水平线。
+    for t in midi:
+        for c in t["clips"]:
+            ps = [n["pitch"] for n in c["notes"]]
+            if ps:
+                assert len(set(ps)) >= 5, (t["name"], sorted(set(ps)))
+    by_track = {t["name"]: [n["pitch"] for c in t["clips"] for n in c["notes"]] for t in midi}
+    assert 39 <= min(by_track["Ample Bass J"]) and max(by_track["Ample Bass J"]) <= 58   # 贝斯在低音区
+    assert 68 <= min(by_track["Serum 2"]) and max(by_track["Serum 2"]) <= 92            # 主音在中高音区
+    assert len(set(by_track["Ample Guitar SJ"])) >= 12
+    assert not any("没有音高轨 footer" in w for w in r["warnings"])
     # 音符位置基本落在 1/32 网格上：实测 2502 个里只有 9 个是离网格的
     # （6 个 -1/8 拍的负起点 + 吉他轨上 3 个手拖过的小数起点）
     off_grid = [n for n in notes if abs(n["startTick"] % 60.0) > 1e-6]

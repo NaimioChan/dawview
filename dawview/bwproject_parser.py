@@ -83,7 +83,9 @@ BOUNDARY_CLASSES = (CLS_MIDI_CLIP, CLS_LANE, CLS_AUDIO_LANE, CLS_AUDIO_CLIP)
 
 MARKER6 = b"\x00\x00\x01\xfd\x01\x00"
 POS_ID = b"\x00\x00\x02\xaf\x07"          # 位置字段字节序：元素起点 +15
-LANE_ID = b"\x00\x00\x18\xcb\x12"         # 音符/音频轨（lane）元素：字段号 0x18cb + tag 0x12
+PITCH_FOOTER = b"\x00\x00\x00\xee\x01"   # 音高轨 footer：字段 0xee + tag 0x01，后一字节 = MIDI 音高
+CHANCE_ID = b"\x00\x00\x2d\xfc"          # 每个音符记录的锚点字段号（0x2dfc = 概率）
+LANE_ID = b"\x00\x00\x18\xcb\x12"        # 音符/音频轨（lane）元素：字段号 0x18cb + tag 0x12
 HDR = 15
 
 # ---- 字段号 ----
@@ -315,14 +317,20 @@ def _scan_elements(d: bytes, start: int) -> list[tuple[int, int]]:
     return sorted(found)
 
 
-def _lane_pitch(d: bytes, start: int, stop: int) -> int | None:
-    """lane 的音高 = 字段 (0xee, tag 0x01, u8)。直接按字节找 —— lane 里嵌着音符元素，
-    走字段流会在第一个音符头那里停住，够不到后面的音高字段。"""
-    i = d.find(b"\x00\x00\x00\xee\x01", start, stop)
-    if i < 0:
-        return None
-    val = d[i + 5]
-    return val if 0 <= val <= 127 else None
+def _lane_footers(d: bytes, start: int, stop: int) -> list[tuple[int, int]]:
+    """音高轨的 footer 表：[(footer 偏移, MIDI 音高), ...]。
+
+    音高**不在音符上**：音符记录只有位置/时长/力度，同一条"音高轨"里的音符除了
+    位置全字节相同。音高写在 lane footer 里 —— 字段 (0xee, tag 0x01) 后面跟一个
+    字节的原始 MIDI 音高；音高轨按音高**降序**排在文件里，footer 落在**它那条轨的
+    音符之后**。所以某个音符的音高 = 排在它后面的第一个 footer。
+    """
+    out: list[tuple[int, int]] = []
+    i = d.find(PITCH_FOOTER, start, stop)
+    while i >= 0:
+        out.append((i, d[i + 5]))
+        i = d.find(PITCH_FOOTER, i + 1, stop)
+    return out
 
 
 def _str_field(d: bytes, start: int, stop: int, want: tuple[int, ...]) -> str | None:
@@ -431,14 +439,6 @@ def parse_bwproject(path: str | Path) -> Project:
     spans = [(h, cls, els[k + 1][0] if k + 1 < len(els) else min(h + 4096, len(d)))
              for k, (h, cls) in enumerate(els)]
 
-    # lane 元素自己的字段区到下一个“打断”元素为止（音符/片段都嵌在 lane 里）
-    lane_end: dict[int, int] = {}
-    for k, (h, cls, _n) in enumerate(spans):
-        if cls in LANE_CLASSES:
-            stop = next((h2 for h2, c2, _n2 in spans[k + 1:] if c2 in BOUNDARY_CLASSES),
-                        None)
-            lane_end[h] = stop if stop is not None else min(h + 8192, len(d))
-
     # 全局字段：工程名 / 速度（都在主文档开头；用字节模式找，比走字段流稳）
     name = _u32_str_after(d, F_PROJECT_NAME, doc_start)
     if name:
@@ -451,14 +451,19 @@ def parse_bwproject(path: str | Path) -> Project:
     proj.warnings.append("Bitwig 的速度图没逆向，按首速恒定处理")
     proj.warnings.append("拍号没在工程文件里定位到，按 4/4 处理")
 
+    # 音高轨 footer 表（全局）：音符的音高 = 排在它后面的第一个 footer
+    footers = _lane_footers(d, doc_start, len(d))
+    footer_offs = [f[0] for f in footers]
+    if not footers:
+        proj.warnings.append("一个音高轨 footer（0xee）都没找到，所有音符按 C4 兜底")
+
     midi_tracks = [t for t in tracks if t.kind == "instrument"]
     audio_tracks = [t for t in tracks if t.kind == "audio"]
     clip_seq = 0
     midi_clip_i = 0
     cur_clip: Clip | None = None
-    lane_pitch: list[int] = []
-    cur_lane = -1
     no_vel = 0
+    no_pitch = 0
 
     for h, cls, nxt in spans:
         if cls == CLS_MIDI_CLIP:
@@ -480,15 +485,6 @@ def parse_bwproject(path: str | Path) -> Project:
                 proj.warnings.append(f"MIDI 片段比乐器轨多（第 {midi_clip_i + 1} 个丢了）")
                 cur_clip = None
             midi_clip_i += 1
-            lane_pitch, cur_lane = [], -1
-
-        elif cls == CLS_LANE and cur_clip is not None:
-            pitch = _lane_pitch(d, h + HDR, lane_end.get(h, nxt))
-            if pitch is None:
-                proj.warnings.append("音符轨没读到音高，按 C4(60) 兜底")
-                pitch = 60
-            lane_pitch.append(pitch)
-            cur_lane = len(lane_pitch) - 1
 
         elif cls == CLS_NOTE and cur_clip is not None:
             start = length = 0.0
@@ -502,7 +498,16 @@ def parse_bwproject(path: str | Path) -> Project:
                     length = float(val)
                 elif ident == F_VEL:
                     vel = float(val)
-            pitch = lane_pitch[cur_lane] if 0 <= cur_lane < len(lane_pitch) else 60
+            # 音高：从这个音符记录的锚点（概率字段 0x2dfc）往后数第一个 lane footer
+            anchor = d.find(CHANCE_ID, h, min(nxt, h + 240))
+            pitch = None
+            if footers:
+                k = bisect.bisect_left(footer_offs, anchor if anchor > 0 else h)
+                if k < len(footers):
+                    pitch = footers[k][1]
+            if pitch is None or not 0 <= pitch <= 127:
+                no_pitch += 1
+                pitch = 60
             if vel is None:
                 no_vel += 1
                 v = 100
@@ -513,6 +518,9 @@ def parse_bwproject(path: str | Path) -> Project:
 
     if no_vel:
         proj.warnings.append(f"{no_vel} 个音符没读到力度字段（0xef），按 100 兜底")
+    if no_pitch:
+        proj.warnings.append(
+            f"{no_pitch} 个音符后面没有音高轨 footer（0xee），按 C4 兜底")
 
     # --- 音频片段：class 0xee = 走带上的音频片段；紧随其后的 0xd4 = 它的样本记录 ---
     # 归属规则（没找到引用字段，靠这两条洗出来）：
