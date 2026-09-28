@@ -20,6 +20,8 @@ meta 里有用的是：application_version_name（宿主版本）、creator、re
     [6B 头标记 00 00 01 fd 01 00 —— 或全 0（"与上一个元素同构"的增量写法）]
     [u32 字段号][u8 tag=0x12 —— 或 0x00（同上增量）][u32 class]
     （class 始终在元素起点 +11 .. +14，两种写法都一样）
+还有**最紧凑的头**：[u32 0][u8 0x00][u32 class]，连 6B 头标记都没有 —— 复制粘贴出来的
+片段元素就是这么写的，只认"POS 在元素头 +15"的锚点扫描会漏掉它们
     之后是该元素的字段流。
 字段 = [u32 id][u8 tag][payload]；tag → payload 长度：
     0x01/0x05/0x11 = 1B   0x02 = 2B   0x03/0x04/0x06/0x09/0x0b/0x0c/0x12 = 4B
@@ -33,19 +35,29 @@ meta 里有用的是：application_version_name（宿主版本）、creator、re
     0x2dfc f64 概率 0..1（实测 1.0）
     0xee  u8   音符轨（piano-roll lane）音高，在 **class 0x42** 元素里
     0x129f / 0x512 utf8  音频文件名（在 class 0xd4 元素里，两条一样）
-    0x236 utf8 名字（片段名，写在元素头**之前**）
+    0x236 utf8 片段名（写在**片段元素自己的字段区**里，紧跟 POS 之后；别去抓元素头
+              前面那几十个字节，那是宿主对象自己的名字，实测全是 "Untitled"）
     0x2c8 f64  速度 BPM（在名字叫 "TEMPO" 的 class 0x2bd 元素里）
-    0x288 u32  该 class 的具体类型号（同一 class 内恒定，不是引用）
-元素 class（实测）：0x47 = MIDI 片段(11)  0x42 = 音符轨/lane(44)  0x66 = MIDI 音符(2502)
-    0xee = 音频片段(16)  0xd4 = 音频样本记录(548)  0x43 = 片段端点标记(1096)
-    0x108(78) / 0x203(16) / 0x7d(2) / 0x60b(1，DUR=208 拍 = 工程末尾) 未认出来
+    0x238 u32  **轨道片段列表头**（每轨一份，顺序同摘要；见下面"片段实例"）
+    0x288 u32  片段字段区里的宿主 class：0xbf = 乐器轨、0x105 = 音频轨（用来定片段类型）
+元素 class（实测）：0x47 = MIDI 片段内容对象(11，带完整头的那种)
+    0x42 = 音符轨/lane  0x66 = MIDI 音符(2502)  0xee = 音频片段  0xd4 = 音频样本记录
+    0x43 = 片段端点标记  0x108 / 0x203 / 0x7d / 0x60b(1，DUR=208 拍 = 工程末尾) 未认出来
+**片段实例**（走带上的片段，含复制粘贴出来的副本）不走"带头标记的元素"那条路：
+文档里每条轨道有一份"片段列表头"字段 (0x238, tag 0x09)（31 轨 31 份，顺序同摘要），
+每个片段实例带 (0x288, tag 0x09, 0xbf/0x105)；按"离它最近的、排在它前面的列表头"归轨。
+实测：11 个片段内容对象 → **44 个 MIDI 片段实例 + 548 个音频片段实例**。
+乐器段的列表头逐轨一份（没片段的轨也是空的）；音频段是"能放音频的轨按顺序一份"，
+所以音频段按摘要里混合轨（class 0x287）的顺序对齐。
+音频片段的采样名只在**每组第一段的样本记录**里出现，后面的记录没有 → 顺着往前补。
 嵌入的**摘要文档**（meta 的 "structure" blob）：只有轨道清单，写成
     (0xace, tag 0x12, class 0x288) / [u32 0][u32 class] + (0xad1, utf8 轨道名)
 class：0x288 = 乐器轨  0x287 = 音频轨  0x28a = FX 返回轨  0x28b = Master
 摘要里第一个对象是工程根本身（class 0x283，名字 "Project"），不算轨道。
 
 ======================= 已知缺口 =======================
-- 音频片段的**轨道归属**只能靠文档顺序对齐摘要里的音频轨顺序，没找到引用字段。
+- 音频片段的轨道归属：乐器段按片段列表头逐轨对齐（可靠）；音频段按"混合轨顺序"对齐，
+  组数与混合轨数对不上时退回按列表头顺序并在 warnings 里说明。
 - class 0x43 / 0x108 / 0x203 / 0x7d 的语义没认出来（0x43 成对出现在音频样本前后，
   疑似淡入淡出端点），这些数据不进契约。
 - 拍号没找到存放处，恒按 4/4 给出（warnings 里说明）。
@@ -88,6 +100,16 @@ CHANCE_ID = b"\x00\x00\x2d\xfc"          # 每个音符记录的锚点字段号�
 LANE_ID = b"\x00\x00\x18\xcb\x12"        # 音符/音频轨（lane）元素：字段号 0x18cb + tag 0x12
 HDR = 15
 
+# ---- 走带片段（含复制粘贴出来的副本）----
+# 每个轨道在文档里有一份"片段列表"头：字段 (0x238, tag 0x09)，31 条轨道 31 个，顺序与摘要一致。
+TRACK_SLOT_ID = b"\x00\x00\x02\x38\x09"
+# 每个片段对象的字段区里带 (0x288, tag 0x09, 宿主 class)：0xbf=乐器轨、0x105=音频轨。
+# **复制粘贴出来的每一段都是独立片段对象**，位置/时长是它字段区的头两个 f64 —— 早期版本
+# 只认带完整元素头的片段，于是"每轨只剩一段"。
+CLIP_OWNER_ID = b"\x00\x00\x02\x88\x09"
+CLIP_OWNER_MIDI, CLIP_OWNER_AUDIO = 0xBF, 0x105
+CLIP_PROLOGUE = 32                       # 位置字段到"宿主 class"字段的固定距离
+
 # ---- 字段号 ----
 F_POS, F_LEN = 0x2AF, 0x26
 F_VEL, F_RELVEL, F_CHANCE = 0xEF, 0xF0, 0x2DFC
@@ -99,7 +121,10 @@ F_TEMPO_NAME = 0x2BD
 F_PROJECT_NAME = 0x44
 
 # ---- 摘要里的轨道 class ----
-TRACK_KIND = {0x288: "instrument", 0x287: "audio", 0x28A: "bus", 0x28B: "bus"}
+# 0x288 = 乐器轨；0x287 = 混合轨（既能放 MIDI 片段也能放音频片段，实测鼓组轨和音频轨
+# 都是它）；0x28a/0x28b = 总线。混合轨按**实际放了什么片段**再定 kind（见 parse 结尾）。
+TRACK_KIND = {0x288: "instrument", 0x287: "midi", 0x28A: "bus", 0x28B: "bus"}
+HYBRID_CLASS = 0x287         # 混合轨：既能放 MIDI 片段也能放音频片段
 ROOT_CLASS = 0x283          # 摘要里第一个对象 = 工程根，不是轨道
 
 PPQ = 480                   # dawview 的 tick 分辨率（Bitwig 内部一律存"拍"）
@@ -317,6 +342,53 @@ def _scan_elements(d: bytes, start: int) -> list[tuple[int, int]]:
     return sorted(found)
 
 
+def _find_all(d: bytes, pat: bytes, start: int = 0) -> list[int]:
+    """所有 pattern 出现的位置。"""
+    out: list[int] = []
+    i = d.find(pat, start)
+    while i >= 0:
+        out.append(i)
+        i = d.find(pat, i + 1)
+    return out
+
+
+def _scan_clips(d: bytes, start: int) -> tuple[list[int], list[tuple[int, str, int]]]:
+    """走带片段清单 → ([(片段字段区起点, "midi"/"audio", 轨道槽下标)], 轨道槽偏移表)。
+
+    轨道归属靠"排在片段前面的最近一个片段列表头"（每个轨道一个，顺序与摘要一致），
+    不需要名字匹配。复制粘贴出来的副本各自是独立片段对象，都会在这里被捞到。
+    """
+    slots = _find_all(d, TRACK_SLOT_ID, start)
+    out: list[tuple[int, str, int]] = []
+    for owner, kind in ((CLIP_OWNER_MIDI, "midi"), (CLIP_OWNER_AUDIO, "audio")):
+        for i in _find_all(d, CLIP_OWNER_ID + struct.pack(">I", owner), start):
+            h = i - CLIP_PROLOGUE
+            if not (h >= start and d[h:h + 5] == POS_ID):
+                h = next((k for k in range(max(start, i - 96), i)
+                          if d[k:k + 5] == POS_ID), -1)
+                if h < 0:
+                    continue
+            out.append((h, kind, bisect.bisect_right(slots, i) - 1))
+    out.sort()
+    return slots, out
+
+
+def _clip_head(d: bytes, h: int, stop: int) -> tuple[float, float]:
+    """片段字段区的头两个 f64 = 位置 / 时长（单位：拍）。"""
+    start = length = 0.0
+    got = 0
+    for ident, tag, val in _fields(d, h, min(stop, h + 96), 6):
+        if tag != TAG_F64:
+            continue
+        if ident == F_POS and got == 0:
+            start = float(val)
+            got = 1
+        elif ident == F_LEN and got == 1:
+            length = float(val)
+            break
+    return start, length
+
+
 def _lane_footers(d: bytes, start: int, stop: int) -> list[tuple[int, int]]:
     """音高轨的 footer 表：[(footer 偏移, MIDI 音高), ...]。
 
@@ -412,6 +484,7 @@ def parse_bwproject(path: str | Path) -> Project:
 
     # --- 轨道清单（摘要文档）---
     tracks: list[Track] = []
+    raw_cls: list[int] = []                    # 摘要里每条轨道的原始 class（下面归音频片段要用）
     summary = meta.get("structure")
     if summary:
         for cls, name in _parse_summary(summary[1]):
@@ -421,6 +494,7 @@ def parse_bwproject(path: str | Path) -> Project:
             if kind is None:
                 proj.warnings.append(f"未知轨道 class {cls:#x}（{name!r}）按 other 处理")
                 kind = "other"
+            raw_cls.append(cls)
             tracks.append(Track(id=f"t{len(tracks)}", name=name, kind=kind))
     else:
         proj.warnings.append("meta 里没有 structure 摘要，轨道清单缺失")
@@ -457,142 +531,135 @@ def parse_bwproject(path: str | Path) -> Project:
     if not footers:
         proj.warnings.append("一个音高轨 footer（0xee）都没找到，所有音符按 C4 兜底")
 
-    midi_tracks = [t for t in tracks if t.kind == "instrument"]
-    audio_tracks = [t for t in tracks if t.kind == "audio"]
+    # --- 片段：走带上的片段实例（复制粘贴出来的副本也是独立一段）---
+    slots, clip_objs = _scan_clips(d, doc_start)
+    if not clip_objs:
+        proj.warnings.append("主文档里没扫到任何片段（0x288 宿主字段），格式可能变了")
+    if len(slots) != len(tracks):
+        proj.warnings.append(
+            f"片段列表头（{len(slots)}）与摘要轨道数（{len(tracks)}）不一致，片段可能归错轨道")
+
+    audio_tracks = [t for t in tracks if t.kind in ("audio", "midi")]
     clip_seq = 0
-    midi_clip_i = 0
-    cur_clip: Clip | None = None
+    clip_clips: list[Clip] = []
+    clip_offs: list[int] = []
+
+    # 音频片段的轨道归属：文档里 MIDI 片段组在前、音频片段组在后，音频组按顺序对应
+    # 摘要里那些"能放音频"的混合轨（实测 16 组 / 16 条，逐条对得上：踢鼓组、帽子循环、
+    # 8 小节循环……）。数量对不上就退回按片段列表头顺序，并留一条警告。
+    audio_owners = [i for i, c in enumerate(raw_cls) if c == HYBRID_CLASS]
+    audio_slots = sorted({si for _h, kind, si in clip_objs if kind == "audio"})
+    audio_map: dict[int, int] = {}
+    if audio_slots and len(audio_slots) == len(audio_owners):
+        audio_map = {si: audio_owners[k] for k, si in enumerate(audio_slots)}
+    elif audio_slots:
+        proj.warnings.append(
+            f"音频片段组（{len(audio_slots)}）与混合轨（{len(audio_owners)}）数量对不上，"
+            "音频片段按片段列表头顺序归轨")
+
+    for k, (h, kind, si) in enumerate(clip_objs):
+        stop = clip_objs[k + 1][0] if k + 1 < len(clip_objs) else min(h + 4096, len(d))
+        start, length = _clip_head(d, h, stop)
+        # 片段名在片段元素**自己的字段区**里（没起名字的片段就是没有这个字段）。
+        # 别去抓元素前 96 字节 —— 那里是宿主对象自己的名字（实测是 "Untitled"），
+        # 抓到就会把片段全叫 "Untitled"。
+        nm = _str_field(d, h, min(stop, h + 512), (F_NAME,)) or ""
+        clip = Clip(id=f"c{clip_seq}", name=nm, kind=kind,
+                    start_tick=start * PPQ, length_tick=length * PPQ)
+        clip_seq += 1
+        clip_clips.append(clip)
+        clip_offs.append(h)
+        ti = audio_map.get(si, si) if kind == "audio" else si
+        if 0 <= ti < len(tracks):
+            tracks[ti].clips.append(clip)
+        else:
+            proj.warnings.append(f"片段 #{clip_seq} 找不到宿主轨道（槽号 {si}）")
+
     no_vel = 0
     no_pitch = 0
+    orphan = 0
 
     for h, cls, nxt in spans:
-        if cls == CLS_MIDI_CLIP:
-            start = length = 0.0
-            for ident, tag, val in _fields(d, h + HDR, nxt, 12):
-                if tag != TAG_F64:
-                    continue
-                if ident == F_POS:
-                    start = float(val)
-                elif ident == F_LEN:
-                    length = float(val)
-            # 片段名在片段元素**自己的字段区**里（没起名字的片段就是没有这个字段）。
-            # 别去抓元素前 96 字节 —— 那里是宿主对象自己的名字（实测是 "Untitled"），
-            # 抓到就会把 11 个片段全叫 "Untitled"。
-            nm = _str_field(d, h + HDR, min(nxt, h + 512), (F_NAME,)) or ""
-            cur_clip = Clip(id=f"c{clip_seq}", name=nm, kind="midi",
-                            start_tick=start * PPQ, length_tick=length * PPQ)
-            clip_seq += 1
-            if midi_clip_i < len(midi_tracks):
-                midi_tracks[midi_clip_i].clips.append(cur_clip)
-            else:
-                proj.warnings.append(f"MIDI 片段比乐器轨多（第 {midi_clip_i + 1} 个丢了）")
-                cur_clip = None
-            midi_clip_i += 1
-
-        elif cls == CLS_NOTE and cur_clip is not None:
-            start = length = 0.0
-            vel = None
-            for ident, tag, val in _fields(d, h + HDR, nxt):
-                if tag != TAG_F64:
-                    continue
-                if ident == F_POS:
-                    start = float(val)
-                elif ident == F_LEN:
-                    length = float(val)
-                elif ident == F_VEL:
-                    vel = float(val)
-            # 音高：从这个音符记录的锚点（概率字段 0x2dfc）往后数第一个 lane footer
-            anchor = d.find(CHANCE_ID, h, min(nxt, h + 240))
-            pitch = None
-            if footers:
-                k = bisect.bisect_left(footer_offs, anchor if anchor > 0 else h)
-                if k < len(footers):
-                    pitch = footers[k][1]
-            if pitch is None or not 0 <= pitch <= 127:
-                no_pitch += 1
-                pitch = 60
-            if vel is None:
-                no_vel += 1
-                v = 100
-            else:
-                v = max(1, min(127, round(vel * 127)))
-            cur_clip.notes.append(Note(start_tick=start * PPQ, length_tick=length * PPQ,
-                                       pitch=pitch, velocity=v))
-
-    if no_vel:
-        proj.warnings.append(f"{no_vel} 个音符没读到力度字段（0xef），按 100 兜底")
-    if no_pitch:
-        proj.warnings.append(
-            f"{no_pitch} 个音符后面没有音高轨 footer（0xee），按 C4 兜底")
-
-    # --- 音频片段：class 0xee = 走带上的音频片段；紧随其后的 0xd4 = 它的样本记录 ---
-    # 归属规则（没找到引用字段，靠这两条洗出来）：
-    #   1) 片段文件名去掉扩展名后和某条音频轨同名 → 就归它（Bitwig 会用拖进来的
-    #      采样名给轨道命名，实测这份工程 16/16 全中）；
-    #   2) 对不上就按文档顺序往后推给下一条音频轨（同一轨多个片段时不会丢）。
-    sample_offs = [h for h, c, _n in spans if c == CLS_AUDIO_SAMPLE]
-    samples: dict[int, str] = {}
-    for k, sh in enumerate(sample_offs):
-        stop = sample_offs[k + 1] if k + 1 < len(sample_offs) else min(sh + 8192, len(d))
-        samples[sh] = _sample_name(d, sh + HDR, stop)
-
-    def _audio_track(fname: str, _i: int):
-        """先按文件名找**还没分到片段**的音频轨，找不到就给第一条空轨（不丢片段）。
-
-        名字比对要先归一化（空格/下划线/大小写都不算数），并且**要么全名相等、
-        要么一方是另一方的前缀且不短于 8 个字符** —— 只比前 12 个字符的话
-        "KSHMR Acoustic Kick…" 和 "KSHMR Acoustic Fill…" 会互相认错。
-        """
-        base = fname.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        for dot in (".wav", ".aif", ".aiff", ".mp3", ".flac", ".ogg"):
-            if base.lower().endswith(dot):
-                base = base[: -len(dot)]
-        free = [t for t in audio_tracks if not t.clips]
-        bn = _norm(base)
-        if bn:
-            for t in free:
-                if _norm(t.name) == bn:
-                    return t
-            for t in free:
-                tn = _norm(t.name)
-                if tn and len(tn) >= 8 and (tn.startswith(bn) or bn.startswith(tn)):
-                    return t
-        if free:
-            return free[0]
-        return audio_tracks[-1] if audio_tracks else None
-
-    audio_i = 0
-
-    for h, cls, nxt in spans:
-        if cls != CLS_AUDIO_CLIP:
+        if cls != CLS_NOTE:
+            continue
+        k = bisect.bisect_right(clip_offs, h) - 1
+        if k < 0 or clip_objs[k][1] != "midi":
+            orphan += 1                            # 音符不在任何 MIDI 片段区间里
             continue
         start = length = 0.0
-        for ident, tag, val in _fields(d, h + HDR, nxt, 12):
+        vel = None
+        for ident, tag, val in _fields(d, h + HDR, nxt):
             if tag != TAG_F64:
                 continue
             if ident == F_POS:
                 start = float(val)
             elif ident == F_LEN:
                 length = float(val)
+            elif ident == F_VEL:
+                vel = float(val)
+        # 音高：从这个音符记录的锚点（概率字段 0x2dfc）往后数第一个 lane footer
+        anchor = d.find(CHANCE_ID, h, min(nxt, h + 240))
+        pitch = None
+        if footers:
+            j = bisect.bisect_left(footer_offs, anchor if anchor > 0 else h)
+            if j < len(footers):
+                pitch = footers[j][1]
+        if pitch is None or not 0 <= pitch <= 127:
+            no_pitch += 1
+            pitch = 60
+        if vel is None:
+            no_vel += 1
+            v = 100
+        else:
+            v = max(1, min(127, round(vel * 127)))
+        clip_clips[k].notes.append(Note(start_tick=start * PPQ, length_tick=length * PPQ,
+                                        pitch=pitch, velocity=v))
+
+    if no_vel:
+        proj.warnings.append(f"{no_vel} 个音符没读到力度字段（0xef），按 100 兜底")
+    if no_pitch:
+        proj.warnings.append(
+            f"{no_pitch} 个音符后面没有音高轨 footer（0xee），按 C4 兜底")
+    if orphan:
+        proj.warnings.append(f"{orphan} 个音符不在任何 MIDI 片段区间里，已跳过")
+
+    # --- 音频片段：片段里紧跟的 0xd4 记录 = 它的样本文件 ---
+    # 轨道归属已经按"片段列表头"定好了，这里只把文件名补上去。
+    sample_offs = [h for h, c, _n in spans if c == CLS_AUDIO_SAMPLE]
+    samples: dict[int, str] = {}
+    for k, sh in enumerate(sample_offs):
+        stop = sample_offs[k + 1] if k + 1 < len(sample_offs) else min(sh + 8192, len(d))
+        samples[sh] = _sample_name(d, sh + HDR, stop)
+
+    audio_i = 0
+    last_name: dict[int, str] = {}                 # 每个片段组里"最近一次见到的采样名"
+    for k, (h, _kind, si) in enumerate(clip_objs):
+        if clip_objs[k][1] != "audio":
+            continue
         j = bisect.bisect_right(sample_offs, h)
         fname = (samples.get(sample_offs[j]) if j < len(sample_offs) else "") or ""
-        track = _audio_track(fname, audio_i)
-        clip = Clip(id=f"c{clip_seq}", name=fname or "音频", kind="audio",
-                    start_tick=start * PPQ, length_tick=length * PPQ,
-                    audio_file=fname or None)
-        clip_seq += 1
-        if track is not None:
-            track.clips.append(clip)
-        else:
-            proj.warnings.append(f"音频片段比音频轨多（第 {audio_i + 1} 个丢了）")
+        # 采样名只在每组片段的第一段记录里出现，后面的片段记录里没有 —— 顺着往前补
+        if fname:
+            last_name[si] = fname
+        fname = last_name.get(si, "")
+        clip = clip_clips[k]
+        clip.audio_file = fname or None
+        clip.name = fname or "音频"
         audio_i += 1
+        if 0 <= si < len(tracks):
+            continue
+        # 槽位对不上（格式变了）时退回按文件名找轨道
+        base = _norm(fname.rsplit("/", 1)[-1].rsplit("\\", 1)[-1])
+        for t in audio_tracks:
+            if not t.clips or _norm(t.name) == base:
+                t.clips.append(clip)
+                break
     if audio_i and not audio_tracks:
         proj.warnings.append("工程里有音频片段但摘要里没有音频轨")
     unfilled = [t.name for t in audio_tracks if not t.clips]
     if unfilled:
         proj.warnings.append(
-            f"{len(unfilled)} 条音频轨没找到片段（音频片段的轨道归属还没完全逆向）："
-            + "、".join(unfilled[:3]))
+            f"{len(unfilled)} 条音频轨没有片段：" + "、".join(unfilled[:3]))
 
     # --- 未知元素统计 ---
     known = {CLS_MIDI_CLIP, CLS_LANE, CLS_NOTE, CLS_AUDIO_CLIP, CLS_AUDIO_SAMPLE,
@@ -604,6 +671,13 @@ def parse_bwproject(path: str | Path) -> Project:
 
     for t in tracks:
         t.clips.sort(key=lambda c: c.start_tick)
+    # 混合轨（摘要里 0x287）按实际内容给准 kind：有 MIDI 片段 → 乐器轨，只有音频 → 音频轨
+    for t in tracks:
+        ks = {c.kind for c in t.clips}
+        if "midi" in ks:
+            t.kind = "instrument"
+        elif "audio" in ks and t.kind in ("midi", "other"):
+            t.kind = "audio"
     end = 0.0
     for t in tracks:
         for c in t.clips:

@@ -2195,9 +2195,10 @@ try {
 
 
   // ==================== Bitwig（.bwproject）快照 ====================
-  // .bwproject 是二进制容器：头部 + meta 块 + "元素流"文档。音高不在音符元素上
-  // （一个音高一条"音高轨"），音频片段的轨道归属没有引用字段（靠采样名 = 轨道名）。
-  // 这一段验证契约字段（31 轨 / 11 MIDI 片段 / 2502 音符 / 16 音频片段）和前端画法。
+  // .bwproject 是二进制容器：头部 + meta 块 + "元素流"文档。片段的位置/时长写在片段
+  // 自己的字段区里（复制粘贴出来的副本各自是独立片段对象）；音高不在音符元素上，一个
+  // 音高一条"音高轨"，音高写在 lane footer 里，取"音符后面第一个 footer"。
+  // 这一段验证契约字段（31 轨 / 44 MIDI 片段 / 2502 音符 / 548 音频片段）和前端画法。
   let bitwigRan = 0;
   if (existsSync(bitwigFixture)) {
     step(`Bitwig 工程快照（${bitwigFixture.split(/[\/]/).pop()}）`);
@@ -2218,7 +2219,7 @@ try {
                  detail: JSON.stringify(t) };
       }],
 
-      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 1064 音符）', async () => {
+      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 每轨 6 段 / 608 音符）', async () => {
         const d = await evalJs(`(() => {
           const s = window.dawview.state.project, tk = {}, ck = {};
           let notes = 0;
@@ -2231,26 +2232,41 @@ try {
           }
           return { tracks: s.tracks.length, tk, ck, notes };
         })()`);
-        // 完整工程是 31 轨 / 2502 音符；快照按 make-fixture 的规则只留每类 3 轨、每轨 3 片段
+        // 完整工程是 31 轨 / 44 MIDI 片段 / 548 音频片段 / 2502 音符；
+        // 快照按 make-fixture 的规则只留每类 3 轨、每轨最多 6 个片段
         return { pass: d.tracks === 9 && d.tk.instrument === 3 && d.tk.audio === 3
-                      && d.tk.bus === 3 && d.ck.midi === 3 && d.ck.audio === 3 && d.notes === 1064,
+                      && d.tk.bus === 3 && d.ck.midi === 6 && d.ck.audio === 18 && d.notes === 608,
                  detail: JSON.stringify(d) };
+      }],
+
+      ['Bitwig 复制粘贴出来的片段一段都没丢（吉他轨 6 段，位置逐段对）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const g = s.tracks.find((t) => t.name === 'Ample Guitar SJ') || { clips: [] };
+          return { n: g.clips.length, pos: g.clips.map((c) => c.startTick / 480) };
+        })()`);
+        return { pass: r.n === 6
+                      && JSON.stringify(r.pos) === JSON.stringify([7, 40, 72, 104, 136, 168]),
+                 detail: JSON.stringify(r) };
       }],
 
       ['Bitwig 音频片段落到了对的轨道上（采样名 = 轨道名）', async () => {
         const r = await evalJs(`(() => {
           const s = window.dawview.state.project;
-          const pick = (n) => (s.tracks.find((t) => t.name === n) || {}).clips || [];
-          return { tan: (pick('KSHMR_Tambourine_02')[0] || {}).audioFile || '',
-                   kick: (pick('DS_SPP2_kick_one_shot_acoustic_optimized')[0] || {}).audioFile || '' };
+          const files = (n) => [...new Set(((s.tracks.find((t) => t.name === n) || {}).clips || [])
+                                          .map((c) => c.audioFile))];
+          return { hat: files('KSHMR_Acoustic_Hat_Loop_13_120'),
+                   ride: files('KSHMR_Acoustic_Ride_01'),
+                   counts: s.tracks.map((t) => t.clips.length) };
         })()`);
-        // 第二条是"轨道名跟采样名不同名"的那种（用户改过名），只能靠文档顺序落位
-        return { pass: r.tan === 'KSHMR_Tambourine_01.wav'
-                      && r.kick === 'KSHMR Acoustic Kick 12 - Hard.wav',
+        // 快照里只留了前 3 条音频轨；每条轨的片段都必须是它自己的那个采样文件
+        return { pass: JSON.stringify(r.hat) === JSON.stringify(['KSHMR_Acoustic_Hat_Loop_13_120.wav'])
+                      && JSON.stringify(r.ride) === JSON.stringify(['KSHMR_Acoustic_Ride_01.wav'])
+                      && r.counts.filter((n) => n === 6).length >= 3,
                  detail: JSON.stringify(r) };
       }],
 
-      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨 footer 取值，快照里 37..96）', async () => {
+      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨 footer 取值，快照里 40..96）', async () => {
         const r = await evalJs(`(() => {
           const dv = window.dawview;
           dv.setViewMode('midi');
@@ -2261,10 +2277,10 @@ try {
           const v = dv.state.view;
           const pitches = v.notes.map((n) => n.pitch);
           return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
-                   min: Math.min(...pitches), max: Math.max(...pitches) };
+                   min: Math.min(...pitches), max: Math.max(...pitches) } ;
         })()`);
-        // 快照里音高 37..96（完整工程 37..99）-> 音区留 2 个半音余量
-        return { pass: r.n === 1064 && r.lo === 35 && r.hi === 98,
+        // 快照里是吉他轨的 608 个音符（音高 40..96）-> 音区留 2 个半音余量
+        return { pass: r.n === 608 && r.lo === 38 && r.hi === 98,
                  detail: JSON.stringify(r) };
       }],
     ];

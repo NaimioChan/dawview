@@ -2,13 +2,15 @@
 
 两段（跟 Cubase / FL / REAPER 那三份同构）：
 1. 合成工程（总能跑）—— 按逆向出来的线格式手搓一份最小 `.bwproject`：
-   容器头 + meta 块（含嵌入的摘要文档）+ 主文档（片段 / 音符轨 / 音符 / 音频片段
-   + 样本记录）。覆盖两个容易踩的点：**元素头的"增量写法"**（头标记与 tag 全是 0、
-   只有 class 摆在同一位置）和**元素内部也会出现 6 字节头标记**（字段 0x1fd 是列表
-   分隔符），后者一度让字段流提前断掉。
+   容器头 + meta 块（含嵌入的摘要文档）+ 主文档（轨道片段列表头 / 片段 / 音符轨 /
+   音符 / 音频片段 / 样本记录）。覆盖三个容易踩的点：
+   **(a)** 元素的"增量写法"（头标记与 tag 全是 0，只剩 class 摆在同一位置）；
+   **(b)** 复制粘贴出来的片段：每一段都是**独立片段对象**，而且是**不带元素头标记**的
+   紧凑写法（早期版本只认带头标记的片段，于是"每轨只剩一段"）；
+   **(c)** 元素内部也会出现 6 字节头标记（字段 0x1fd 是列表分隔符）。
 2. 真实工程（文件在才跑）—— projects/25.6.30 house.bwproject 是 ground truth：
-   124 BPM（文件名里就写着 124BPM）/ 31 轨 / 11 个 MIDI 片段 / 2502 个音符 /
-   16 个音频片段，且音频轨名与音频文件名逐条对得上。
+   124 BPM / 31 轨 / **44 个 MIDI 片段 + 548 个音频片段**（用户把 8 小节循环复制粘贴了
+   很多遍）/ 2502 个音符，且每条音频轨的片段名都是它自己的采样文件。
 """
 from __future__ import annotations
 
@@ -27,6 +29,8 @@ REAL_BW = ROOT / "projects" / "25.6.30 house.bwproject"
 
 HEADER_TAIL = bytes(28)          # 0x0e..0x2a 那段十六进制字段，解析器不看
 MARKER = b"\x00\x00\x01\xfd\x01\x00"
+
+OWNER_MIDI, OWNER_AUDIO = 0xBF, 0x105
 
 
 # ------------------------------------------------------------------ 线格式小工具
@@ -68,6 +72,19 @@ def elem(cls: int, ident: int, body: bytes, incremental: bool = False) -> bytes:
     return head + body
 
 
+def bare_elem(cls: int, body: bytes) -> bytes:
+    """紧凑元素头：没有 6B 头标记，只有 [u32 0][0x00][u32 class]（9 字节）。
+
+    真实工程里复制粘贴出来的片段就是这种写法 —— 片段检测不能依赖头标记。
+    """
+    return u32(0) + bytes([0x00]) + u32(cls) + body
+
+
+def clip_prologue(pos: float, length: float, owner: int) -> bytes:
+    """片段字段区的固定开头：位置 + 时长 + 0x10f8 + (0x288, 宿主 class)。"""
+    return ff64(0x2AF, pos) + ff64(0x26, length) + fu8(0x10F8, 0) + fu32(0x288, owner)
+
+
 def bw_doc(body: bytes, root_cls: int = 0x285) -> bytes:
     return b"BtWg" + b"0003000200" + HEADER_TAIL + b"\x0a" + u32(root_cls) + body
 
@@ -84,8 +101,9 @@ def summary_doc(tracks: list[tuple[int, str]], pad: int = 64) -> bytes:
 
 
 def synth_project() -> bytes:
-    """"Guitar"（乐器轨，1 片段 2 音符 / 2 条音高轨）+ "Drums"（音频轨，2 音频片段）。"""
-    summary = summary_doc([(0x288, "Guitar"), (0x287, "Drums")])
+    """"Guitar"（乐器轨，2 个 MIDI 片段，第二段是复制粘贴的副本）
+    + "Drums"（混合轨，2 个音频片段）+ "Master"（总线，没片段）。"""
+    summary = summary_doc([(0x288, "Guitar"), (0x287, "Drums"), (0x28A, "Master")])
 
     meta = u32(4) + u32(4) + b"meta"
     for key, payload in ((b"application_version_name", field(0, 0x08, u32(6) + b"5.3.13")),
@@ -97,29 +115,39 @@ def synth_project() -> bytes:
     body = fstr(0x44, "合成工程")                           # 工程名（字段 0x44）
     body += fstr(0x2BD, "TEMPO") + ff64(0x2C8, 128.0)        # 速度对象
 
-    # --- MIDI 片段（乐器轨 1）：片段名写在片段元素自己的字段区里 ---
-    body += elem(0x47, 0x21F,                    # POS 必须还是第一个字段（元素扫描的锚点）
-                 ff64(0x2AF, 4.0) + fstr(0x236, "Verse") + ff64(0x26, 8.0) + fu8(0x10F8, 0))
-    # --- 音高轨 1（音高 60）：两条音符，第二条用"增量"元素头 ---
-    body += elem(0x42, 0x18CB, b"")
+    # --- 轨道 1（Guitar）的片段列表头 ---
+    body += fu32(0x238, 0x52)
+    # 片段 1：带完整元素头，名字写在片段自己的字段区里
+    body += elem(0x47, 0x21F, clip_prologue(4.0, 8.0, OWNER_MIDI) + fstr(0x236, "Verse"))
+    body += elem(0x42, 0x18CB, b"")                          # 音高轨（音高 60）
     body += elem(0x66, 0x21F, ff64(0x2AF, 0.0) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
                  + u32(0) + ff64(0xEF, 1.0))
     body += elem(0x66, 0x21F, ff64(0x2AF, 1.0) + ff64(0x26, 0.25) + fu8(0x10F8, 0)
                  + u32(0) + ff64(0xEF, 0.5), incremental=True)
-    body += fu8(0xEE, 60)                                   # 音高轨的音高（在音符之后）
-    # --- 音高轨 2（音高 67）：一条音符 ---
-    body += elem(0x42, 0x18CB, b"")
+    body += fu8(0xEE, 60)                                    # 音高轨的音高（在音符之后）
+    body += elem(0x42, 0x18CB, b"")                          # 音高轨 2（音高 67）
     body += elem(0x66, 0x21F, ff64(0x2AF, 2.0) + ff64(0x26, 1.0) + fu8(0x10F8, 0)
                  + u32(0) + ff64(0xEF, 0.75))
     body += fu8(0xEE, 67)
-    # --- 音频片段（音频轨 1）+ 它后面的样本记录（文件名）---
-    body += elem(0xEE, 0x21F, ff64(0x2AF, 16.0) + ff64(0x26, 4.0) + fu8(0x10F8, 0))
+    # 片段 2：**紧凑元素头**的副本（同一轨的第二段），没名字、一个音符
+    body += bare_elem(0x47, clip_prologue(12.0, 4.0, OWNER_MIDI))
+    body += elem(0x42, 0x18CB, b"")
+    body += elem(0x66, 0x21F, ff64(0x2AF, 0.5) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
+                 + u32(0) + ff64(0xEF, 0.5))
+    body += fu8(0xEE, 55)
+
+    # --- 轨道 2（Drums）的片段列表头 + 两个音频片段（各带自己的样本记录）---
+    body += fu32(0x238, 0x53)
+    body += elem(0xEE, 0x21F, clip_prologue(16.0, 4.0, OWNER_AUDIO))
     body += elem(0x43, 0x21F, ff64(0x2AF, 0.0) + ff64(0xA6, 0.0))     # 端点标记（不进契约）
     body += elem(0xD4, 0x21F, ff64(0x2AF, 0.0) + ff64(0x26, 4.0) + fu8(0x10F8, 0)
                  + fstr(0x129F, "kick.wav") + fstr(0x512, "kick.wav"))
-    body += elem(0xEE, 0x21F, ff64(0x2AF, 24.0) + ff64(0x26, 2.0) + fu8(0x10F8, 0))
+    body += elem(0xEE, 0x21F, clip_prologue(24.0, 2.0, OWNER_AUDIO))
     body += elem(0xD4, 0x21F, ff64(0x2AF, 0.0) + ff64(0x26, 2.0) + fu8(0x10F8, 0)
                  + fstr(0x129F, "snare.wav") + fstr(0x512, "snare.wav"))
+
+    # --- 轨道 3（Master）的片段列表头：没有片段 ---
+    body += fu32(0x238, 0x54)
 
     return (b"BtWg" + b"0003000200" + HEADER_TAIL          # 容器头（42 字节）
             + meta + b" " * 16                            # meta 块 + 空格填充
@@ -146,30 +174,35 @@ def test_synth_meta(synth):
 
 def test_synth_tracks(synth):
     kinds = [(t["name"], t["kind"]) for t in synth["tracks"]]
-    assert kinds == [("Guitar", "instrument"), ("Drums", "audio")]
+    # 混合轨按实际内容定 kind（这里放的是音频片段 → audio），总线上没片段就保持 bus
+    assert kinds == [("Guitar", "instrument"), ("Drums", "audio"), ("Master", "bus")]
     assert all(t["name"] != "Project" for t in synth["tracks"])   # 工程根不算轨道
 
 
-def test_synth_midi_clip_and_notes(synth):
+def test_synth_midi_clips_and_notes(synth):
+    """同一轨两段（第二段是复制粘贴出来的副本），两段都得在，音符各归各的。"""
     track = synth["tracks"][0]
-    assert len(track["clips"]) == 1
-    clip = track["clips"][0]
-    assert clip["name"] == "Verse"
-    assert clip["kind"] == "midi"
-    assert clip["startTick"] == 4.0 * 480          # 拍 → tick
-    assert clip["lengthTick"] == 8.0 * 480
-    notes = clip["notes"]
-    assert [(n["startTick"], n["lengthTick"], n["pitch"]) for n in notes] == [
+    assert len(track["clips"]) == 2
+    first, second = track["clips"]
+    assert first["name"] == "Verse" and first["kind"] == "midi"
+    assert first["startTick"] == 4.0 * 480          # 拍 → tick
+    assert first["lengthTick"] == 8.0 * 480
+    assert [(n["startTick"], n["lengthTick"], n["pitch"]) for n in first["notes"]] == [
         (0.0, 240.0, 60), (480.0, 120.0, 60), (960.0, 480.0, 67)]
-    assert [n["velocity"] for n in notes] == [127, 64, 95]        # 0..1 → 1..127
+    assert [n["velocity"] for n in first["notes"]] == [127, 64, 95]   # 0..1 → 1..127
+
+    assert second["name"] == ""                     # 副本没起名字
+    assert second["startTick"] == 12.0 * 480
+    assert second["lengthTick"] == 4.0 * 480
+    assert [(n["startTick"], n["pitch"]) for n in second["notes"]] == [(240.0, 55)]
 
 
 def test_synth_audio_clips(synth):
     track = synth["tracks"][1]
     names = [(c["startTick"], c["audioFile"]) for c in track["clips"]]
-    # 文件名跟轨道名对不上，两段都按文档顺序落在唯一那条音频轨上（一段都不丢）
     assert names == [(16.0 * 480, "kick.wav"), (24.0 * 480, "snare.wav")]
     assert all(c["kind"] == "audio" and c["notes"] == [] for c in track["clips"])
+    assert synth["tracks"][2]["clips"] == []        # 总线上没片段
 
 
 def test_synth_length_and_unknown_classes(synth):
@@ -201,41 +234,64 @@ def test_real_project():
     tracks = r["tracks"]
     kinds = [t["kind"] for t in tracks]
     assert len(tracks) == 31
-    assert kinds.count("instrument") == 11
-    assert kinds.count("audio") == 16
+    assert kinds.count("instrument") == 15         # 11 条乐器轨 + 4 条鼓组混合轨（有 MIDI 片段）
+    assert kinds.count("audio") == 12              # 12 条音频轨
     assert kinds.count("bus") == 4                 # 3 条 FX 轨 + Master
     assert tracks[0]["name"] == "Ample Guitar SJ"
     assert tracks[-1]["name"] == "Master"
+    assert all(not t["clips"] for t in tracks if t["kind"] == "bus")   # 总线不放片段
 
-    midi = [t for t in tracks if t["kind"] == "instrument"]
-    assert all(len(t["clips"]) == 1 for t in midi)          # 每个乐器轨一个片段
-    notes = [n for t in midi for c in t["clips"] for n in c["notes"]]
+    # --- 片段数量：复制粘贴出来的副本一段都不能少 ---
+    clips = [c for t in tracks for c in t["clips"]]
+    midi = [c for c in clips if c["kind"] == "midi"]
+    audio = [c for c in clips if c["kind"] == "audio"]
+    assert len(midi) == 44
+    assert len(audio) == 548
+
+    # 吉他轨：复制粘贴到 7 / 40 / 72 / 104 / 136 / 168 拍
+    guitar = tracks[0]
+    assert [c["startTick"] / 480 for c in guitar["clips"]] == [7.0, 40.0, 72.0, 104.0, 136.0, 168.0]
+
+    notes = [n for c in midi for n in c["notes"]]
     assert len(notes) == 2502
     assert all(0 <= n["pitch"] <= 127 and 1 <= n["velocity"] <= 127 for n in notes)
-    # 音高：一条轨一个音区（音高写在音高轨 footer 上，按"后面第一个 footer"取）。
-    # 每个有音符的片段都得有一把真正的音高，不能被兜底成一条水平线。
-    for t in midi:
+    # 音高写在音高轨 footer 上（按"音符后面第一个 footer"取）：
+    # 每个有音符的片段都得有一把真音高，不能被兜底成一条水平线
+    for t in tracks:
         for c in t["clips"]:
             ps = [n["pitch"] for n in c["notes"]]
             if ps:
                 assert len(set(ps)) >= 5, (t["name"], sorted(set(ps)))
-    by_track = {t["name"]: [n["pitch"] for c in t["clips"] for n in c["notes"]] for t in midi}
-    assert 39 <= min(by_track["Ample Bass J"]) and max(by_track["Ample Bass J"]) <= 58   # 贝斯在低音区
-    assert 68 <= min(by_track["Serum 2"]) and max(by_track["Serum 2"]) <= 92            # 主音在中高音区
+    by_track = {t["name"]: [n["pitch"] for c in t["clips"] for n in c["notes"]] for t in tracks}
+    assert min(by_track["Ample Guitar SJ"]) == 40                  # 吉他 40..96
+    assert max(by_track["Ample Guitar SJ"]) <= 96
     assert len(set(by_track["Ample Guitar SJ"])) >= 12
+    assert 68 <= min(by_track["KSHMR_Tambourine_02"]) <= 92        # 铃鼓在打击乐音区
     assert not any("没有音高轨 footer" in w for w in r["warnings"])
     # 音符位置基本落在 1/32 网格上：实测 2502 个里只有 9 个是离网格的
     # （6 个 -1/8 拍的负起点 + 吉他轨上 3 个手拖过的小数起点）
     off_grid = [n for n in notes if abs(n["startTick"] % 60.0) > 1e-6]
     assert len(off_grid) <= 12, off_grid
 
-    # 音频轨与音频文件名：16 条音频轨逐条对上（Bitwig 用拖进来的采样名给轨道命名），
-    # 只有第一条轨的名字跟它的采样不同名（用户自己改过），所以单独点名核对。
-    by_name = {t["name"]: t["clips"][0]["audioFile"] for t in tracks
-               if t["kind"] == "audio" and t["clips"]}
-    assert len(by_name) == 16
-    assert by_name["KSHMR Crash 02"] == "KSHMR Crash 02.wav"
-    assert by_name["KSHMR Acoustic Fill 128BPM 10"] == "KSHMR Acoustic Fill 128BPM 10.wav"
-    assert by_name["KSHMR_Acoustic_Hat_Loop_13_120"] == "KSHMR_Acoustic_Hat_Loop_13_120.wav"
-    assert by_name["DS_SPP2_kick_one_shot_acoustic_optimized"] == "KSHMR Acoustic Kick 12 - Hard.wav"
-    assert r["lengthTicks"] == 84480.0
+    # --- 音频片段：一条轨的片段都用同一个采样，采样名就是轨道名（Bitwig 拿拖进来的
+    # 采样名给轨道命名）；4 条鼓组轨是"采样器重采样"，名字跟采样文件不同名，只查具体值。
+    own = {t["name"]: {c["audioFile"] for c in t["clips"] if c["kind"] == "audio"}
+           for t in tracks}
+    for nm in ("KSHMR_Acoustic_Hat_Loop_13_120", "KSHMR_Acoustic_Ride_01", "KSHMR Crash 02",
+               "KSHMR Crash 05", "KSHMR Funk Guitar 05 (104, D)", "KSHMR Acoustic Fill 128BPM 10",
+               "KSHMR Trappy Hat Loop 07 - 130BPM", "KSHMR Shaker Loop 36 - 124BPM - Mixed",
+               "Industrial Sound (6)", "KSHMR Top Loop 41 - 124BPM - No Clap",
+               "Cymatics - FX Essentials White Noise Downlifter 9",
+               "KSHMR Foley Drum Loop 37 - 124BPM - Tops"):
+        assert own[nm] == {nm + ".wav"}, (nm, own[nm])
+    assert own["DS_SPP2_kick_one_shot_acoustic_optimized"] == {"KSHMR Acoustic Kick 12 - Hard.wav"}
+    assert own["KSHMR_Tambourine_02"] == {"KSHMR_Tambourine_01.wav"}
+    assert own["VEH4 Shifted Clap Snare 035 -14ms"] == {"VEH4 Shifted Clap Snare 039 -42ms.wav"}
+    assert own["NodeX_Snare_Clap_07"] == {"NodeX_Snare_Clap_02.wav"}
+    counts = {t["name"]: len(t["clips"]) for t in tracks if t["kind"] == "audio"}
+    assert counts["KSHMR_Acoustic_Hat_Loop_13_120"] == 16              # 帽子循环摆 16 遍
+    assert counts["KSHMR Crash 02"] == 4                               # 4 次 crash
+    assert counts["KSHMR Acoustic Fill 128BPM 10"] == 2                # 2 个 fill
+    assert len(audio) == sum(counts.values()) + 309                    # 其余在 4 条鼓组轨上
+
+    assert r["lengthTicks"] == 216.0 * 480
