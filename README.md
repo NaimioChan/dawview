@@ -15,11 +15,38 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 |---|---|---|---|
 | Cubase | `.cpr` | 15.0.30 WIN64 | `dawview/cpr_parser.py` |
 | FL Studio | `.flp` | 25.2.4.5242 | `dawview/flp_parser.py` |
+| REAPER | `.rpp` | 7.67/win64 | `dawview/rpp_parser.py` |
 | — | `.json` | — | 已经是 dawview 契约 JSON 就直接打开（内置示例走这条） |
 
-两种格式都是**实证逆向**出来的，线格式笔记写在各自解析器的 docstring 里
+三种格式都是**实证逆向**出来的，线格式笔记写在各自解析器的 docstring 里
 （字段偏移、事件 ID、踩过的坑）。加新宿主只要在 `dawview/app.py` 的 `PARSERS`
 注册表里登记一个"路径 → 契约字典"的函数。
+
+## 解析能力对照表
+
+三个宿主吐出来的是**同一套契约**（`docs/01-data-contract.md`），差别只在"工程文件里到底有没有这个
+信息"、以及解析器从哪儿把它抠出来。✅ = 实测能解析；⚠ = 能解析但有前提或精度损失；
+✗ = 工程里没有这项，或解析器还没做；— = 没验过。
+
+| 能解析的东西 | Cubase `.cpr` | FL Studio `.flp` | REAPER `.rpp` |
+|---|---|---|---|
+| 轨道清单（名字 / 数量） | ✅ | ✅（FL 固定写满 500 条，只留有内容或有名字的） | ✅ |
+| 轨道种类 | ✅ 乐器 / MIDI / 音频 / 文件夹 / 标记 / 速度 / 和弦 | ⚠ 由片段种类反推（MIDI / 音频 / 自动化 / 其他），没有"乐器"这一类 | ✅ 文件夹 / 乐器 / MIDI / 音频 |
+| 片段（位置 / 长度 / 名字） | ✅ MIDI 片段 + 音频事件 | ✅ 播放列表片段 | ✅ 音频 / MIDI 片段 |
+| MIDI 音符（音高 / 起止 / 力度） | ✅ | ✅ | ✅ |
+| CC 控制器曲线（钢琴窗曲线栏） | ✅ 实测一份工程 CC1 有 5271 个点 | ✗ FL 不存 CC | ✅ 事件流里的 `0xBn`（含每条 MIDI 源末尾的 CC123） |
+| 工程速度 | ✅ | ⚠ 没有速度事件（ID 156）时按音频片段反推，写进 `warnings` | ✅ |
+| 速度轨 → 变速播放 | ✅ 实测一份工程 1129 个变速点 | ✅ Tempo 自动化曲线（按 1/16 拍加密，忽略曲线张力） | ⚠ 定速工程已实测；多变速点那一支只过了合成工程，没真机对照 |
+| 拍号 | ✅ | ✅ | ✅ |
+| 采样率 | ⚠ 找不到 `AudioSampleRate` 就默认 44100（不报警） | ✗ 工程里不存，默认 44100 + `warnings` | ⚠ 找不到 `SAMPLERATE` 就默认 44100（不报警） |
+| 标记 / 区间 | ✗（标记轨只当一条轨道显示，轨里的标记点不读） | ⚠ 位置只取那个 u32 的低 16 位 | ✅（区间只取起点，隐藏标记跳过） |
+| 文件夹轨 | ✅ | ✗ | ✅ |
+| 自动化片段（色块） | ✗ | ✅ | ✗ |
+| 多 take / 循环片段 | — | — | ⚠ 只取第一个 take；片段标了 `LOOP 1` 而源内容比片段短时不复制音符（记 `warnings`） |
+
+三个宿主**都还没做**的（dawview 侧的共通缺口，不是某个格式缺）：静音 / 独奏状态、工程里的
+轨道颜色（配色是 dawview 里自己配的）、音频文件内容与真实波形（只画位置和装饰波形）、
+自动化**曲线**的绘制（契约预留了 `AutomationTrack`，本期只渲染色块）、音符 / CC 的编辑。
 
 ## 快速开始
 
@@ -37,7 +64,7 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 | 方式 | 命令 |
 |---|---|
 | Windows 双击 | `run.bat`（默认打开内置示例；想固定打开自己的工程，把路径写进 `default-project.txt`） |
-| 拖放 | 把 `.cpr` / `.flp` 拖到 `run.bat` 上 |
+| 拖放 | 把 `.cpr` / `.flp` / `.rpp` 拖到 `run.bat` 上 |
 | 命令行 | `python -m dawview "路径/工程.flp"` |
 | 先看看长什么样（不用自己的工程） | `python -m dawview docs/demo-project.json` |
 | 只看解析结果、不起服务 | 加 `--dev`（会写出 `web/project.json`） |
@@ -51,7 +78,7 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 
 整套流程（拖工程 → 浏览器源 → 录制）：
 
-1. **打开 dawview**：把工程文件（`.cpr` / `.flp`）拖到 `run.bat` 上。dawview 窗口打开，
+1. **打开 dawview**：把工程文件（`.cpr` / `.flp` / `.rpp`）拖到 `run.bat` 上。dawview 窗口打开，
    同时留着一个命令行窗口，里面打印着 OBS 要填的地址：
 
    ```
@@ -96,7 +123,7 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 - **走带视图**：轨道 / 片段 / 音符 / 标尺 / 网格，横纵滚动、时间缩放、行高缩放
 - **MIDI 钢琴窗**：全部 128 个琴键，音高 × 时间，进视图自动滚到音符所在音区
 - **播放走带**：播放头扫过时音符提亮发光、片段入点亮起、播放头拖尾（全部可单独关）
-- **变速播放**：按工程的速度轨逐段变速走带（Cubase 速度轨 / FL 速度自动化曲线），不是整首一个 BPM
+- **变速播放**：按工程的速度轨逐段变速走带（Cubase 速度轨 / FL 速度自动化曲线 / REAPER 速度轨），不是整首一个 BPM
 - **力度 / CC 曲线栏**：钢琴窗下部可加多栏看力度或任意 CC 曲线，栏高可调（**默认一栏都不显示**）
 - **12 套明暗主题**：对比度有硬门槛，验证脚本逐套核对
 - **配色**：每条轨道单独配色（12 色卡 / 自定义取色 / 批量渐变），按工程分开记
@@ -225,6 +252,9 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
   通道 `ID 234` 的包络，按播放列表里该通道的片段定位），曲线值按 `BPM = 60 + 120 × value`
   还原，再按 1/16 拍加密成台阶 —— 实测 149 点曲线 → 897 个台阶点，曲线常驻值 0.625 正好
   = 135.000 BPM = 工程速度，两边对得上。
+- **REAPER**：工程速度在 `TEMPO` 行，变速在 `<TEMPOENVEX>` 的 `PT <秒> <bpm>` 点上
+  （`dawview/rpp_parser.py`）。RPP 里的时间全是秒，解析器按阶梯速度轨把秒积分成 tick；
+  REAPER 的速度轨本身就是阶梯，一个点一个台阶，不用插值。
 - 契约里的 `tempoMap` 就是 `[[tick, bpm], ...]`，前端自己积分钟数（`buildTempo`）；
   没有速度轨的工程退化成一个点（按 `meta.bpm` 定速），行为跟以前完全一样。
 
@@ -265,11 +295,37 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
   （那 40 根柱子是给音频片段画装饰的，画到自动化上就是编的）。
 - **轨道固定写满 500 条**，没名字又没片段的直接不输出（否则界面是 500 行空轨道）。
 
+## 宿主差异：REAPER（.rpp）
+
+`.rpp` 是**纯文本分块**工程（`<TAG ...>` 开块、`>` 收块），解析器在 `dawview/rpp_parser.py`。
+实测工程（1.8 MB / 2 万行 / REAPER 7.67/win64）解析结果：190.0 BPM / 4/4 / ppq 960 /
+19 轨道（3 条文件夹轨、6 条乐器轨、2 条纯 MIDI 轨）/ 266 片段（音频 253 + MIDI 13）/ 393 音符。
+
+几个和二进制格式不一样的地方：
+
+- **时间全是秒**：片段 `POSITION`/`LENGTH`/`SOFFS`、标记位置、速度轨点的位置都是秒，
+  而契约只认 tick —— 解析器先在秒域拼出阶梯速度轨，再做分段积分/反解（`_Timebase`）。
+  定标判据是"两条独立数据流对上同一个数"：一个 `LENGTH 20.21052631578947` 秒的片段
+  在 190 BPM 下正好 64 个四分音符 = 61440 tick，而同一片段里 MIDI 事件的 tick 偏移
+  逐条累加也正好是 61440。单位理解错的话这两个数不可能同时成立。
+- **MIDI 事件是十六进制 + 增量**：`E <相对上一条的 tick 偏移> <状态字节 d1 d2>`，
+  只有偏移是十进制（`E 0 90 28 60` = note-on，音高 `0x28`=40、力度 `0x60`=96）。
+  行首 `e` / `E` 只表示"选中 / 未选中"，**两者都是事件** —— 只收大写会把音符砍一半
+  （实测一份工程里同一条流 69 条 `E` + 68 条 `e`）。
+- **文件夹轨 = `ISBUS` 第一个字段 1**；字段 2 是"文件夹里最后一条轨"，那条自己还有内容，
+  不按文件夹算。乐器按 FX 链里的插件描述前缀判（`VST3i:` / `VSTi:` 带 i）。
+- **CC 在事件流里**：`0xBn` 事件就是 CC（d1 号 / d2 值），所以钢琴窗下部的 CC 栏对
+  REAPER 工程有效。注意 REAPER 会在每个 MIDI 源末尾写一条 **CC123（全部音符关）**，
+  解析器照收 —— 那栏下拉里除了你画的曲线，还会多一个 CC123。
+- **`<FREEZE>` 里的原始 item 不解析**（那是解冻时恢复用的副本，画出来音符会翻倍）；
+  一个 item 只取第一个 take。
+
 ## 数据契约
 
 后端解析 → 契约 JSON → 由本地 HTTP 服务（`dawview/server.py`）发给前端；同一份 JSON 也写进
 `web/project.json`，这样不起服务、直接开页面也能看（无头验证走的就是这条路）。契约是**两端唯一接口**，写在 [`docs/01-data-contract.md`](docs/01-data-contract.md)：
-顶层 `meta / tempoMap / markers / tracks / lengthTicks`，轨道有 `kind`，
+顶层 `meta / tempoMap / markers / tracks / lengthTicks`，轨道有 `kind`
+（`instrument` / `midi` / `audio` / `folder` / `automation` / `other`），
 片段有 `kind`（`midi` / `audio` / `automation` / `other`）、`notes`（含 `velocity`）和
 `controllers`（`{cc, name, points: [[tick, value], ...]}`，tick 相对片段起点，跟 `Note.startTick` 一样）。
 `tempoMap` 是 `[[tick, bpm], ...]` 的**阶梯**速度轨（首点必在 tick 0；单点 = 定速）。
@@ -287,6 +343,7 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 dawview/          纯 Python 后端
   cpr_parser.py   Cubase .cpr 解析器（实证逆向，含格式注释）
   flp_parser.py   FL Studio .flp 解析器（事件流 + 播放列表记录，80/60/32 字节自适应）
+  rpp_parser.py   REAPER .rpp 解析器（纯文本块 + 秒/ tick 换算，含格式注释）
   model.py        宿主无关数据模型
   server.py       本地 HTTP 服务（静态文件 + /project.json + /events 长连接，纯标准库）
   app.py          入口：解析 → 起本地服务 → 开窗口（PARSERS 按扩展名分发）
@@ -297,9 +354,9 @@ web/              前端（原生 JS，无构建）
 docs/
   01-data-contract.md   前后端唯一接口（改契约必须两端同步）
   demo-project.json     手写的合成示例工程（README 截图 / run.bat 默认打开）
-tests/            pytest（48 项：Cubase 6 + FL 10 + 速度轨/力度/CC 16 + 本地服务 16）
+tests/            pytest（94 项：Cubase 6 + FL 10 + REAPER 21 + 速度轨/力度/CC 16 + 本地服务 16）
 scripts/
-  verify.mjs       前端 CDP 验证（37 + 10 + 5 项，见下）
+  verify.mjs       前端 CDP 验证（38 + 10 + 6 + 5 项，见下）
   fx-probe.mjs     动效可见度量化（像素级差分）
   make-demo.py     重新生成 docs/demo-project.json
   make-fixture.py  从你的工程裁一份验证快照（快照不入库，见下）
@@ -310,14 +367,14 @@ run.bat            Windows 启动器
 ## 验证
 
 ```bash
-python -m pytest tests/ -q                       # 73 项（Cubase 6 + FL 10 + 速度轨/力度/CC 16 + 本地服务/多窗口 41）
+python -m pytest tests/ -q                       # 94 项（Cubase 6 + FL 10 + REAPER 21 + 速度轨/力度/CC 16 + 本地服务/多窗口 41）
 
 # 前端验证：需要一个静态服务 + 一个带 CDP 的浏览器
 python -m http.server 8765 --bind 127.0.0.1 --directory web &
 "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" \
   --headless=new --remote-debugging-port=9223 \
   --user-data-dir=$LOCALAPPDATA/Temp/edge-cdp-dawview &
-node scripts/verify.mjs                          # 前端 53 项（Cubase 快照），ALL CHECKS PASSED
+node scripts/verify.mjs                          # 前端 59 项（Cubase 38 + FL 10 + REAPER 6 + 变速 5），ALL CHECKS PASSED
 node scripts/fx-probe.mjs                        # 动效可见度量化（像素级差分）
 ```
 
@@ -338,6 +395,7 @@ node scripts/relay-verify.mjs --python py        # 指定解释器（默认 pyth
 ```bash
 python scripts/make-fixture.py "我的工程.cpr"     # -> scripts/fixture-project.json
 python scripts/make-fixture.py "我的工程.flp"     # -> scripts/fixture-project-fl.json
+python scripts/make-fixture.py "我的工程.rpp"     # -> scripts/fixture-project-reaper.json
 
 # 变速那 5 项要一份"真的在变速"的工程快照（.cpr/.flp 都行），单独一个开关：
 python scripts/make-fixture.py "变速工程.cpr" --out scripts/fixture-project-tempo.json
@@ -356,10 +414,21 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
   （第一版滚动断言就是从被测函数反推期望位置，反向验证时居然 PASS）。
 - 像素断言里半透明底色要跟**混出来的颜色**比（`0.84*底 + 0.16*片段色`），
   拿原色比会得出相反的结论。
-- 跑完 Cubase 那 37 项后，脚本会换上 FL 快照重载页面再跑 10 项（宿主/速度/采样率、
+- 顶栏那条几何断言（位置串变长时播放按钮不许动）是这么写的：把 `#pos-label` 的
+  `textContent` 换成最坏情况串（`117.99.99 · 89.3 BPM`），前后各取一次
+  `getBoundingClientRect().left`（这个调用会强制重排），断言差值为 0。
+  反向验证：把 `.transport` 用 `appendChild` 挪回右端（旧布局），同一次测量立刻从
+  125 变成 631→616 —— 证明这条断言抓得住旧写法。
+- 跑完 Cubase 那 38 项后，脚本会换上 FL 快照重载页面再跑 10 项（宿主/速度/采样率、
   种类计数、自动化片段平涂、音频波形还在、ppq=96 标尺，以及滚动/快筛/渐变那几项）；
+  再换上 REAPER 快照跑 6 项（宿主/版本/ppq=960、文件夹轨+种类计数、中文「文件夹」标签、
+  960 的标尺换算、钢琴窗音符与音区、CC 栏能选到 CC123）；
   有速度轨快照的话再换一次跑 5 项（速度轨解析、`secAt`/`tickAtSec` 自洽、**变速播放**、
   走带标签速度读数、CC 栏绘制）。其中两项滚动断言把视口压到 1400×320 才滚得动，测完复原。
+- 目标是**共享的 headless Edge**：脚本连上后会先 `Page.bringToFront` —— 页面在后台时
+  `document.visibilityState` 是 `hidden`，rAF 被节流（播放头不推进、`captureScreenshot`
+  还会卡死），断言会得出"实现坏了"的错误结论。挑目标页时也只认 `--url` 那个地址，
+  免得挑到 Edge 首启多开的 `edge://sync-confirmation-dialog` 页上去。
 - 变速播放那一项是这么测的：在速度轨里挑一段最快的和一段最慢的，各手动喂 30 帧
   （16.7ms 一帧，不依赖真实 rAF），比较两段的 tick 推进量之比 ≈ 两段 BPM 之比
   （实测 1.381 vs 1.381）。整首套一个旧速度的实现会在这里露馅。
@@ -378,8 +447,12 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
 - **不解析音频**：只画波形位置/装饰，不放声音、不做真实波形。
 - **FL 速度是反推的**：工程里没存速度；采样率文件里也没有，只能默认 44100 并写进 `warnings`。
 - **FL 时间标记位置只取那个 u32 的低 16 位**（实测 `0x08000300` → 768），不保证对所有工程都对。
-- **解析器是实证逆向**：只在 Cubase 15.0.30 WIN64 与 FL Studio 25.2.4.5242 上验证过，
-  换版本可能失效（失败会给出 warning 而不是崩）。
+- **解析器是实证逆向**：只在 Cubase 15.0.30 WIN64、FL Studio 25.2.4.5242 与
+  REAPER 7.67/win64 上验证过，换版本可能失效（失败会给出 warning 而不是崩）。
+- **REAPER 的变速轨只验过定速工程**：手头那份 `.rpp` 的 `TEMPOENVEX` 里没有变速点，
+  多变速点那一支是按社区 state-chunk 文档（包络点位置单位 = 秒）实现的，还没在真机上对过。
+- **REAPER 只取第一个 take**，多 take 工程会少画别的 take；片段标了 `LOOP 1` 而源内容
+  比片段短时不会把源内容重复画一遍（只在 `warnings` 里说明）。
 - **只在 Windows 上实测过**：Edge/Chrome app 模式开窗口那条路。解析、服务、前端本身
   是跨平台的，但没在别的系统上跑过 —— 非 Windows 上找不到 Edge/Chrome 的安装路径时
   会退回系统默认浏览器（有地址栏）。
@@ -400,6 +473,9 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
 ## 致谢
 
 - FLP 格式参考了 [PyFLP](https://github.com/demberto/PyFLP) 的源码（只当资料读，没有依赖它）
+- REAPER 的 `.rpp` 字段语义参照 ReaTeam/Doc 的
+  [State Chunk Definitions](https://github.com/ReaTeam/Doc)（社区整理的 state chunk 文档），
+  单位（秒 / ppq / 十六进制事件字节）都用工程文件本身交叉验证过
 - 窗口是 Edge/Chrome 的 app 模式（`--app=`），本地服务用标准库 `http.server`
 - 早期版本用 [webui2](https://pypi.org/project/webui2/) 开窗口，现已去掉：它提供的是
   「静态服务 + 一个 JS 桥」，而那个桥只在页面启动时用一次，数据本来就有文件回退这条路

@@ -48,19 +48,10 @@ import re
 import struct
 from pathlib import Path
 
-from .model import Clip, Controller, Note, Project, Track, normalize_tempo_map
+from .model import CC_NAMES, Clip, Controller, Note, Project, Track, normalize_tempo_map
 
 PPQ = 480
 BOM = b"\xef\xbb\xbf"
-
-# 常用 CC 的中文名（钢琴窗下部那栏直接显示这个）
-CC_NAMES = {
-    1: "调制轮", 2: "呼吸", 4: "脚踏", 5: "滑音时间", 7: "音量", 8: "平衡",
-    10: "声像", 11: "表情", 64: "延音踏板", 65: "滑音踏板", 66: "持音踏板",
-    67: "弱音踏板", 68: "连奏踏板", 71: "共鸣", 74: "明亮度", 84: "滑音控制",
-    91: "混响", 92: "颤音深度", 93: "合唱", 94: "颤音延迟", 95: "相位",
-    121: "复位控制器", 123: "全部音符关",
-}
 
 _TEMPO_CLASS = b"MTempoTrackEvent"
 _YTUC_PAT = re.compile(rb"yTuc\x00\x01")

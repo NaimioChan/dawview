@@ -1777,7 +1777,7 @@ async function boot() {
   } catch (err) {
     el.empty.hidden = false;
     // 自己开 index.html（没跑后端）时最容易撞上这个：给一句能照着做的提示
-    el.emptyMsg.textContent = `${err.message || err} —— 请用 python -m dawview "你的工程.cpr|.flp" 打开；`
+    el.emptyMsg.textContent = `${err.message || err} —— 请用 python -m dawview "你的工程.cpr|.flp|.rpp" 打开；`
       + '想先看示例：python -m dawview docs/demo-project.json';
     el.status.textContent = '载入失败';
     return;

@@ -8,15 +8,18 @@
 <body>
   <header class="bar">
     <div class="brand">dawview</div>
-    <div class="proj" id="proj-info">正在载入…</div>
 
-    <div class="spacer"></div>
-
+    <!-- 播放控制放在最左边（brand 右边）：右边只有"位置 + 速度"这一个会变长的串，
+         它一变长就把左边的按钮顶着走 → 播放时抽搐。左对齐在固定邻居旁边就不会动。 -->
     <div class="transport">
       <button id="btn-home" title="回到开头">⏮</button>
       <button id="btn-play" class="primary" title="播放 / 暂停（空格）">▶</button>
       <span class="pos" id="pos-label">1.1.0</span>
     </div>
+
+    <div class="proj" id="proj-info">正在载入…</div>
+
+    <div class="spacer"></div>
 
     <div class="zoom">
       <button id="btn-zoom-out" title="缩小">−</button>

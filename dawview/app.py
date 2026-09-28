@@ -26,6 +26,7 @@ DEFAULT_PORT = 8973
 
 from .cpr_parser import parse_cpr
 from .flp_parser import parse_flp
+from .rpp_parser import parse_rpp
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -33,6 +34,7 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 PARSERS = {
     ".cpr": parse_cpr,
     ".flp": parse_flp,
+    ".rpp": parse_rpp,
 }
 
 
@@ -208,7 +210,7 @@ def _find_browser_folder() -> str | None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="dawview",
-        description="把 Cubase .cpr 工程解析成可滚动浏览的走带视图")
+        description="把 Cubase .cpr / FL Studio .flp / REAPER .rpp 工程解析成可滚动浏览的走带视图")
     ap.add_argument("project", help="工程文件路径，例如 26.9.6 lulabi.cpr")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)

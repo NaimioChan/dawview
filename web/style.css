@@ -45,7 +45,7 @@ body { display: flex; flex-direction: column; }
 
 .brand { font-weight: 600; letter-spacing: .08em; color: var(--accent); }
 
-.proj { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.proj { color: var(--muted); font-size: 12px; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .spacer { flex: 1 1 auto; }
 

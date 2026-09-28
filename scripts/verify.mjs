@@ -19,6 +19,8 @@ mkdirSync(shotDir, { recursive: true });
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = resolve(here, 'fixture-project.json');
 const flFixture = resolve(here, 'fixture-project-fl.json');
+// REAPER 快照（.rpp 是纯文本工程，秒 -> tick 的换算只有这份工程才验得了）
+const reaperFixture = resolve(here, 'fixture-project-reaper.json');
 // 速度轨快照：任意"带复杂变速"的工程（.cpr/.flp 都行）。变速播放只有真·变速
 // 工程才验得出来，所以单独一段；没有这个快照就跳过，不报错。
 const tempoFixture = resolve(arg('--tempo-fixture', resolve(here, 'fixture-project-tempo.json')));
@@ -33,7 +35,12 @@ const withTimeout = (p, ms, label) =>
   Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout: ${label}`)), ms))]);
 
 const targets = await (await fetch(`${CDP}/json`)).json();
-const page = targets.find((t) => t.type === 'page' && !t.url.startsWith('chrome://'));
+// 优先挑 --url 指向的那个页面：Edge 首次启动会额外开一个
+// edge://sync-confirmation-dialog 页，挑错了整轮验证都跑在空页上
+const pages = targets.filter((t) => t.type === 'page' && !t.url.startsWith('chrome://')
+  && !t.url.startsWith('edge://'));
+const page = pages.find((t) => t.url === TARGET || t.url.startsWith(TARGET.split('?')[0]))
+  || pages[0];
 if (!page) throw new Error('no page target (Edge 是否带 --remote-debugging-port 启动?)');
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 await withTimeout(new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; }), 10_000, 'ws open');
@@ -64,10 +71,19 @@ const evalJs = async (expression) => {
 // 关掉浏览器缓存：改了 web/*.js 后必须拿到新代码，否则测的是旧文件
 await send('Network.enable');
 await send('Network.setCacheDisabled', { cacheDisabled: true });
+// 把目标页提到前面：headless Edge 起手会多开一个 edge://sync-confirmation-dialog 页，
+// 我们的页面在后台（document.visibilityState = 'hidden'）时 rAF 被节流 ——
+// 播放头不推进、Page.captureScreenshot 还会直接卡死（实测第 3 张必挂）。
+await send('Page.bringToFront').catch(() => {});
 const shot = async (file) => {
-  const r = await send('Page.captureScreenshot', { format: 'png' });
-  writeFileSync(resolve(shotDir, file), Buffer.from(r.data, 'base64'));
-  console.log(`  saved ${file}`);
+  try {
+    const r = await withTimeout(send('Page.captureScreenshot', { format: 'png' }), 15_000,
+                                'Page.captureScreenshot');
+    writeFileSync(resolve(shotDir, file), Buffer.from(r.data, 'base64'));
+    console.log(`  saved ${file}`);
+  } catch (err) {
+    console.log(`  (截图 ${file} 没拿到：${err.message} —— 不影响断言)`);
+  }
 };
 const step = (l) => console.log(`• ${l}`);
 
@@ -199,6 +215,25 @@ const checks = [
     })()`);
     await evalJs(`window.dawview.setPlaying(false)`);
     return { pass: r.t1 > r.t0 + 100, detail: JSON.stringify(r) };
+  }],
+
+  ['顶栏：位置串变长时不推挤播放控制', async () => {
+    // 位置串宽度会随播放变化（"9.4.2 · 190.0 BPM" → "117.99.99 · 89.3 BPM"）。
+    // 播放按钮若排在它右边，就会跟着左右抽搐 —— 这条用最坏情况串盯住几何。
+    const r = await evalJs(`(() => {
+      const el = document.getElementById('pos-label');
+      const btn = document.getElementById('btn-play');
+      const home = document.getElementById('btn-home');
+      const keep = el.textContent;
+      const x0 = btn.getBoundingClientRect().left;
+      const h0 = home.getBoundingClientRect().left;
+      el.textContent = '117.99.99 · 89.3 BPM';
+      const x1 = btn.getBoundingClientRect().left;   // getBoundingClientRect 会强制重排
+      const h1 = home.getBoundingClientRect().left;
+      el.textContent = keep;
+      return { x0: Math.round(x0), x1: Math.round(x1), h0: Math.round(h0), h1: Math.round(h1) };
+    })()`);
+    return { pass: r.x0 === r.x1 && r.h0 === r.h1, detail: JSON.stringify(r) };
   }],
 
   ['标尺点击可定位', async () => {
@@ -2011,8 +2046,153 @@ try {
     }
   }
 
+  // ==================== REAPER（.rpp）快照 ====================
+  // .rpp 是**纯文本**工程（不像 .cpr/.flp 是二进制），时间全都用秒写，
+  // 解析器要按速度轨积分成 tick。这一段验证"契约字段（ppq=960、文件夹轨、
+  // 音频/MIDI 片段、CC）前端真的按 REAPER 那份数据画"。
+  let reaperRan = 0;
+  if (existsSync(reaperFixture)) {
+    step(`REAPER 工程快照（${reaperFixture.split(/[\\/]/).pop()}）`);
+    copyFileSync(reaperFixture, live);
+    await evalJs(`location.reload()`);
+    await sleep(2500);
+
+    const reaperChecks = [
+      ['REAPER 元信息（宿主 / 速度 / 拍号 / ppq=960 / 采样率）', async () => {
+        // 顶栏那行不显示 ppq，ppq 直接从载入进来的契约里读
+        const t = await evalJs(`(() => {
+          const m = window.dawview.state.project.meta;
+          return { text: document.getElementById('proj-info').textContent, ppq: m.ppq };
+        })()`);
+        return { pass: /dnb/.test(t.text) && /\breaper\b/.test(t.text) && /7\.67/.test(t.text)
+                      && /190 BPM/.test(t.text) && /4\/4/.test(t.text)
+                      && /44100/.test(t.text) && t.ppq === 960,
+                 detail: JSON.stringify(t) };
+      }],
+
+      ['REAPER 轨道/片段种类齐全（文件夹轨也在）', async () => {
+        const d = await evalJs(`(() => {
+          const s = window.dawview.state.project, tk = {}, ck = {};
+          let notes = 0;
+          for (const t of s.tracks) {
+            tk[t.kind] = (tk[t.kind] || 0) + 1;
+            for (const c of t.clips) {
+              ck[c.kind] = (ck[c.kind] || 0) + 1;
+              notes += (c.notes || []).length;
+            }
+          }
+          return { tracks: s.tracks.length, tk, ck, notes };
+        })()`);
+        return {
+          pass: d.tracks === 11 && d.tk.folder === 3 && d.tk.audio === 3 && d.tk.midi === 2
+                && d.tk.instrument === 3 && d.ck.audio === 18 && d.ck.midi === 6 && d.notes === 272,
+          detail: JSON.stringify(d),
+        };
+      }],
+
+      ['轨道菜单里文件夹轨显示中文「文件夹」', async () => {
+        await evalJs(`window.dawview.renderTrackMenu()`);
+        const txt = await evalJs(`document.getElementById('track-menu-list').textContent`);
+        return { pass: /文件夹/.test(txt) && !/folder/.test(txt), detail: txt.slice(0, 120) };
+      }],
+
+      ['ppq=960 的走带标尺（3840 tick = 第 2 小节 · 190 BPM）', async () => {
+        const label = await evalJs(`(() => {
+          const dv = window.dawview;
+          dv.state.playheadTick = 3840;      // 960 ppq -> 3840 tick = 4 拍 = 1 小节
+          dv.updatePosLabel();
+          return document.getElementById('pos-label').textContent;
+        })()`);
+        return { pass: /^2\.1\.0 · 190(\.0)? BPM$/.test(label.trim()), detail: label };
+      }],
+
+      ['钢琴窗：REAPER 的音符画出来了（音区按音符自动定）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          dv.setViewMode('midi');
+          dv.state.hiddenTracks.clear();
+          dv.state.kindFilter = '';
+          dv.rebuildView();
+          dv.paint();
+          const v = dv.state.view;
+          const pitches = v.notes.map((n) => n.pitch);
+          return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
+                   min: Math.min(...pitches), max: Math.max(...pitches) };
+        })()`);
+        // 合成快照里音高 36..78 -> 音区留 2 个半音余量
+        return { pass: r.n === 272 && r.lo === 34 && r.hi === 80,
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['CC 栏能选到 REAPER 的控制器（CC123 全部音符关）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          dv.setViewMode('midi');
+          dv.state.lanes = [];
+          dv.rebuildView();
+          const c = document.getElementById('tl');
+          const g = c.getContext('2d');
+          const dpr = window.devicePixelRatio || 1;
+          const h = c.clientHeight;
+          const band = () => {
+            const d = g.getImageData(0, Math.round((h - 120) * dpr), c.width, Math.round(120 * dpr)).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) if (d[i] > 60 || d[i + 1] > 60 || d[i + 2] > 60) n++;
+            return n;
+          };
+          dv.paint();
+          const before = band();
+          dv.addLane({ kind: 'cc', cc: 123 });
+          dv.paint();
+          const after = band();
+          const lay = dv.laneLayout(dv.state.view, h);
+          return { choices: dv.ccChoices(), before, after, total: lay.total };
+        })()`);
+        const line = (r.choices || []).find((c) => c.cc === 123);
+        // 单点 CC 画在片段最末尾，不落在采样的那一段里 —— 这里只认
+        // "下拉里能选到它" + "栏位真的占了高度"，像素断言交给上面那份 FL 的（他有 30 点）
+        return { pass: !!line && line.name === '全部音符关' && line.n === 6 && r.total > 0,
+                 detail: JSON.stringify(r) };
+      }],
+    ];
+
+    for (const [name, fn] of reaperChecks) {
+      reaperRan++;
+      step(name);
+      try {
+        const r = await fn();
+        console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.detail ?? ''}`);
+        if (!r.pass) failed++;
+      } catch (err) {
+        console.log(`  ERROR ${err.message}`);
+        failed++;
+      }
+    }
+
+    await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.lanes = [];
+      dv.setViewMode('arrange');
+      dv.state.pxPerTick = 0.06;
+      dv.state.playheadTick = 0;
+      dv.rebuildView();
+      document.getElementById('scroll').scrollLeft = 0;
+      document.getElementById('scroll').scrollTop = 0;
+      dv.paint();
+    })()`);
+    await sleep(300);
+    await shot('shot-reaper.png');
+
+    if (existsSync(fixture)) {          // 复原固定快照
+      copyFileSync(fixture, live);
+      await evalJs(`location.reload()`);
+      await sleep(1500);
+    }
+  }
+
   const ran = (existsSync(fixture) ? checks.length : 0)
             + (existsSync(flFixture) ? flRan : 0)
+            + (existsSync(reaperFixture) ? reaperRan : 0)
             + (existsSync(tempoFixture) ? tempoRan : 0);
   if (ran === 0) {
     console.log('\n0 项：没有数据快照，什么都没验证。');

@@ -6,8 +6,9 @@
 
     python scripts/make-fixture.py "我的工程.cpr"      # -> scripts/fixture-project.json
     python scripts/make-fixture.py "我的工程.flp"      # -> scripts/fixture-project-fl.json
+    python scripts/make-fixture.py "我的工程.rpp"      # -> scripts/fixture-project-reaper.json
 
-文件名默认按扩展名定（`scripts/verify.mjs` 就按这两个名字找），要别的名字用 --out：
+文件名默认按扩展名定（`scripts/verify.mjs` 就按这几个名字找），要别的名字用 --out：
 
     python scripts/make-fixture.py "变速工程.cpr" --out scripts/fixture-project-tempo.json
     node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
@@ -27,7 +28,8 @@ from dawview.app import PARSERS  # noqa: E402
 
 PER_KIND = 3          # 每种轨道类型留几条
 MAX_CLIPS = 6         # 每条轨道最多留几个片段
-OUT_NAME = {".cpr": "fixture-project.json", ".flp": "fixture-project-fl.json"}
+OUT_NAME = {".cpr": "fixture-project.json", ".flp": "fixture-project-fl.json",
+            ".rpp": "fixture-project-reaper.json"}
 
 
 def main() -> int:

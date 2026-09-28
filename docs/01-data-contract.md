@@ -5,6 +5,10 @@
 > 方向：后端 → 前端单向推送（`loadProject`），前端不回传数据。
 
 ## Changelog
+- v0.4 (2026-09-28): 支持 REAPER `.rpp`。`host` 加 `reaper`；ppq 960（REAPER 的 MIDI 源固定
+  960）。RPP 是**纯文本**工程，里面的时间全是**秒**（片段位置/长度、标记、速度轨点的位置），
+  解析器按阶梯速度轨积分成 tick 再进契约 —— 契约本身没变。轨道种类多了 `folder`
+  （REAPER 的文件夹父轨）；`controllers` 现在也由 REAPER 填充（事件流里的 `0xBn`）。
 - v0.3 (2026-09-22): 变速播放。`tempoMap` 从"单点占位"变成真·速度轨
   （Cubase 速度轨 1129 点 / FL 速度自动化曲线），语义定为**阶梯（hold）**：
   tick t 的速度 = 最后一个 tick ≤ t 的点的 bpm。片段新增 `controllers`
@@ -19,7 +23,7 @@
 ```jsonc
 {
   "meta": {
-    "host": "cubase",             // cubase | fl | bitwig (未来)
+    "host": "cubase",             // cubase | fl | reaper | bitwig (未来)
     "hostVersion": "15.0.30",
     "projectName": "26.9.6 lulabi",
     "bpm": 76.0,                  // 首拍速度 = tempoMap[0][1]；tempoMap 有完整曲线
@@ -92,8 +96,10 @@
 ```
 
 - 一个 clip 里同一个 CC 号只出现一次；没有 CC 数据的片段给 `[]`。
-- **只有 Cubase 会填**：`.cpr` 的 MIDI 事件流里带真正的 CC（实测一份工程里
-  CC1 5271 点 / CC11 2715 点 / CC64 178 点）。FL 的 `.flp` 不存 CC，恒为 `[]`。
+- **Cubase 与 REAPER 会填，FL 恒为 `[]`**：`.cpr` 的 MIDI 事件流里带真正的 CC
+  （实测一份工程里 CC1 5271 点 / CC11 2715 点 / CC64 178 点）；REAPER 的 MIDI 事件流
+  里带 `0xBn` 事件（一份工程实测每个 MIDI 片段末尾都有一条 CC123「全部音符关」，照收）；
+  FL 的 `.flp` 不存 CC。
 - 力度不需要控制器：`Note.velocity` 就是力度，前端直接画柱状。
 
 ## 宿主解析器
@@ -102,8 +108,9 @@
 |---|---|---|
 | `.cpr` | `dawview/cpr_parser.py` | Cubase 15.0.30 / 15.0.21 WIN64 |
 | `.flp` | `dawview/flp_parser.py` | FL Studio 25.2.4.5242 / 24.1.1.4285 |
+| `.rpp` | `dawview/rpp_parser.py` | REAPER 7.67/win64 |
 
-两种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
+三种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
 字段偏移、事件 ID、踩过的坑），本文件只管两端之间的 JSON 契约。
 
 FL 特有的几点（都会影响契约字段）：
@@ -120,6 +127,26 @@ FL 特有的几点（都会影响契约字段）：
 - **没有 CC**：FL 的 Pattern 不存 MIDI CC，`controllers` 恒为 `[]`。
 - 播放列表记录长度按版本不同（FL 25 是 80 字节，FL 24 是 60 字节，
   更早是 32 字节），解析器按"记录自洽"打分自动选。
+
+REAPER 特有的几点（都会影响契约字段）：
+
+- **RPP 是纯文本**，时间一律写**秒**（片段 `POSITION`/`LENGTH`/`SOFFS`、标记位置、
+  速度轨点位置），契约只认 tick，所以解析器先拼出秒域的速度轨、再分段积分成 tick。
+  定标判据（实测）：一个 `LENGTH 20.21052631578947` 秒的片段在 190 BPM 下正好
+  64 个四分音符 = 61440 tick，而片段里 MIDI 事件的 tick 偏移累加也正好 61440。
+- **ppq 960**（`HASDATA 1 960 QN`）。万一某个 MIDI 源的 ppq 不是 960，
+  解析器按比例缩放到 960（契约的 `ppq` 对 REAPER 固定 960）。
+- **速度轨**：工程速度在顶层 `TEMPO <bpm> <拍号分子> <拍号分母>`，
+  变速在 `<TEMPOENVEX>` 的 `PT <秒> <bpm> ...`。REAPER 的速度轨本身就是阶梯
+  （一个点保持到下一个点），与契约 v0.3 的语义天然一致，不用加密也不用插值。
+- **文件夹轨**：`ISBUS` 第一个字段 = 1 是文件夹父轨 → 轨道 `kind: "folder"`；
+  = 2 是"文件夹里最后一条轨"，它自己还是有内容的普通轨（按片段判 kind）。
+- **乐器判定**：`<FXCHAIN>` 里插件描述前缀带 i（`VST3i:` / `VSTi:`）= 乐器 →
+  有 MIDI 片段的轨道 kind 给 `instrument`，否则 `midi`。
+- **标记**：顶层 `MARKER <序号> <秒> <名字> <标志位> ...`；区间是两行同序号的
+  MARKER（第二行没有名字），只取第一行的起点当标记；标志位 &16（隐藏）的跳过。
+- 降级：认不出的 `<SOURCE ...>`（比如 CLICK/REX）→ `kind: "other"` + warning；
+  一个 item 只取第一个 take；`LOOP 1` 但源内容比片段短时**不复制**音符（记 warning）。
 
 ## Note
 
