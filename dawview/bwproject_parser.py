@@ -475,7 +475,10 @@ def parse_bwproject(path: str | Path) -> Project:
                     start = float(val)
                 elif ident == F_LEN:
                     length = float(val)
-            nm = _u32_str_before(d, F_NAME, max(0, h - 96), h) or ""
+            # 片段名在片段元素**自己的字段区**里（没起名字的片段就是没有这个字段）。
+            # 别去抓元素前 96 字节 —— 那里是宿主对象自己的名字（实测是 "Untitled"），
+            # 抓到就会把 11 个片段全叫 "Untitled"。
+            nm = _str_field(d, h + HDR, min(nxt, h + 512), (F_NAME,)) or ""
             cur_clip = Clip(id=f"c{clip_seq}", name=nm, kind="midi",
                             start_tick=start * PPQ, length_tick=length * PPQ)
             clip_seq += 1

@@ -97,9 +97,9 @@ def synth_project() -> bytes:
     body = fstr(0x44, "合成工程")                           # 工程名（字段 0x44）
     body += fstr(0x2BD, "TEMPO") + ff64(0x2C8, 128.0)        # 速度对象
 
-    # --- MIDI 片段（乐器轨 1）：片段名写在元素头之前 ---
-    body += fstr(0x236, "Verse")
-    body += elem(0x47, 0x21F, ff64(0x2AF, 4.0) + ff64(0x26, 8.0) + fu8(0x10F8, 0))
+    # --- MIDI 片段（乐器轨 1）：片段名写在片段元素自己的字段区里 ---
+    body += elem(0x47, 0x21F,                    # POS 必须还是第一个字段（元素扫描的锚点）
+                 ff64(0x2AF, 4.0) + fstr(0x236, "Verse") + ff64(0x26, 8.0) + fu8(0x10F8, 0))
     # --- 音高轨 1（音高 60）：两条音符，第二条用"增量"元素头 ---
     body += elem(0x42, 0x18CB, b"")
     body += elem(0x66, 0x21F, ff64(0x2AF, 0.0) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
