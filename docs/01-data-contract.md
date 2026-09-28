@@ -1,10 +1,16 @@
-# dawview 数据契约 (v0.3)
+# dawview 数据契约 (v0.5)
 
 > 解析器（Python 后端）与 WebUI 前端之间的唯一接口。
 > 改契约 = 改这个文件头部 changelog + 两端同步。
 > 方向：后端 → 前端单向推送（`loadProject`），前端不回传数据。
 
 ## Changelog
+- v0.5 (2026-09-28): 支持 Bitwig Studio `.bwproject`。`host` 加 `bitwig`；ppq 480（Bitwig 内部就是
+  480）。`.bwproject` 是**二进制容器**（头部 + meta 块 + 元素流文档），契约本身没变 —— 位置/时长/
+  力度在文件里都是“拍”，解析器乘 480 变 tick。两处要点写进了解析器 docstring：
+  **音高存在“音高轨”元素上**（一个音高一条轨，音符元素里没有音高字段）；
+  **音频片段的轨道归属没有引用字段**，靠“采样文件名 = 轨道名” + 文档顺序两条启发式，
+  可疑处记进 `warnings`。
 - v0.4 (2026-09-28): 支持 REAPER `.rpp`。`host` 加 `reaper`；ppq 960（REAPER 的 MIDI 源固定
   960）。RPP 是**纯文本**工程，里面的时间全是**秒**（片段位置/长度、标记、速度轨点的位置），
   解析器按阶梯速度轨积分成 tick 再进契约 —— 契约本身没变。轨道种类多了 `folder`
@@ -23,7 +29,7 @@
 ```jsonc
 {
   "meta": {
-    "host": "cubase",             // cubase | fl | reaper | bitwig (未来)
+    "host": "cubase",             // cubase | fl | reaper | bitwig
     "hostVersion": "15.0.30",
     "projectName": "26.9.6 lulabi",
     "bpm": 76.0,                  // 首拍速度 = tempoMap[0][1]；tempoMap 有完整曲线
@@ -109,8 +115,9 @@
 | `.cpr` | `dawview/cpr_parser.py` | Cubase 15.0.30 / 15.0.21 WIN64 |
 | `.flp` | `dawview/flp_parser.py` | FL Studio 25.2.4.5242 / 24.1.1.4285 |
 | `.rpp` | `dawview/rpp_parser.py` | REAPER 7.67/win64 |
+| `.bwproject` | `dawview/bwproject_parser.py` | Bitwig Studio 5.3.13 |
 
-三种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
+四种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
 字段偏移、事件 ID、踩过的坑），本文件只管两端之间的 JSON 契约。
 
 FL 特有的几点（都会影响契约字段）：

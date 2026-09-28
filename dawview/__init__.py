@@ -1,6 +1,6 @@
 """dawview — read-only DAW project timeline viewer.
 
-Backends: cubase (.cpr) today; fl (.flp) / bitwig (.bwproject) later.
+Backends: cubase (.cpr), fl (.flp), reaper (.rpp), bitwig (.bwproject).
 See docs/01-data-contract.md for the wire format.
 """
 

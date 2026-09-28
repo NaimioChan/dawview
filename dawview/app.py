@@ -24,14 +24,16 @@ from pathlib import Path
 # 固定服务端口：见 run() 里的说明（localStorage 按端口隔离）
 DEFAULT_PORT = 8973
 
+from .bwproject_parser import parse_bwproject
 from .cpr_parser import parse_cpr
 from .flp_parser import parse_flp
 from .rpp_parser import parse_rpp
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
-# 宿主解析器注册表 —— 后续扩展 bwproject 时在此登记即可
+# 宿主解析器注册表 —— 加新宿主解析器时在此登记即可
 PARSERS = {
+    ".bwproject": parse_bwproject,
     ".cpr": parse_cpr,
     ".flp": parse_flp,
     ".rpp": parse_rpp,

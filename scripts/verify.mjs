@@ -21,6 +21,9 @@ const fixture = resolve(here, 'fixture-project.json');
 const flFixture = resolve(here, 'fixture-project-fl.json');
 // REAPER 快照（.rpp 是纯文本工程，秒 -> tick 的换算只有这份工程才验得了）
 const reaperFixture = resolve(here, 'fixture-project-reaper.json');
+// Bitwig 快照（.bwproject 是二进制容器 + "元素流"文档，音高存在音高轨上、
+// 音频片段归属靠启发式 —— 这一段验的就是这些真的落进了契约与前端的画法）
+const bitwigFixture = resolve(here, 'fixture-project-bitwig.json');
 // 速度轨快照：任意"带复杂变速"的工程（.cpr/.flp 都行）。变速播放只有真·变速
 // 工程才验得出来，所以单独一段；没有这个快照就跳过，不报错。
 const tempoFixture = resolve(arg('--tempo-fixture', resolve(here, 'fixture-project-tempo.json')));
@@ -2190,9 +2193,120 @@ try {
     }
   }
 
+
+  // ==================== Bitwig（.bwproject）快照 ====================
+  // .bwproject 是二进制容器：头部 + meta 块 + "元素流"文档。音高不在音符元素上
+  // （一个音高一条"音高轨"），音频片段的轨道归属没有引用字段（靠采样名 = 轨道名）。
+  // 这一段验证契约字段（31 轨 / 11 MIDI 片段 / 2502 音符 / 16 音频片段）和前端画法。
+  let bitwigRan = 0;
+  if (existsSync(bitwigFixture)) {
+    step(`Bitwig 工程快照（${bitwigFixture.split(/[\/]/).pop()}）`);
+    copyFileSync(bitwigFixture, live);
+    await evalJs(`location.reload()`);
+    await sleep(2500);
+
+    const bitwigChecks = [
+      ['Bitwig 元信息（宿主 / 5.3.13 / 124 BPM / ppq=480 / 采样率）', async () => {
+        const t = await evalJs(`(() => {
+          const m = window.dawview.state.project.meta;
+          return { text: document.getElementById('proj-info').textContent, ppq: m.ppq };
+        })()`);
+        return { pass: /house/.test(t.text) && /\bbitwig\b/.test(t.text)
+                      && /5\.3\.13/.test(t.text) && /124 BPM/.test(t.text)
+                      && /4\/4/.test(t.text) && /44100/.test(t.text)
+                      && t.ppq === 480,
+                 detail: JSON.stringify(t) };
+      }],
+
+      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 1064 音符）', async () => {
+        const d = await evalJs(`(() => {
+          const s = window.dawview.state.project, tk = {}, ck = {};
+          let notes = 0;
+          for (const t of s.tracks) {
+            tk[t.kind] = (tk[t.kind] || 0) + 1;
+            for (const c of t.clips) {
+              ck[c.kind] = (ck[c.kind] || 0) + 1;
+              notes += (c.notes || []).length;
+            }
+          }
+          return { tracks: s.tracks.length, tk, ck, notes };
+        })()`);
+        // 完整工程是 31 轨 / 2502 音符；快照按 make-fixture 的规则只留每类 3 轨、每轨 3 片段
+        return { pass: d.tracks === 9 && d.tk.instrument === 3 && d.tk.audio === 3
+                      && d.tk.bus === 3 && d.ck.midi === 3 && d.ck.audio === 3 && d.notes === 1064,
+                 detail: JSON.stringify(d) };
+      }],
+
+      ['Bitwig 音频片段落到了对的轨道上（采样名 = 轨道名）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const pick = (n) => (s.tracks.find((t) => t.name === n) || {}).clips || [];
+          return { tan: (pick('KSHMR_Tambourine_02')[0] || {}).audioFile || '',
+                   kick: (pick('DS_SPP2_kick_one_shot_acoustic_optimized')[0] || {}).audioFile || '' };
+        })()`);
+        // 第二条是"轨道名跟采样名不同名"的那种（用户改过名），只能靠文档顺序落位
+        return { pass: r.tan === 'KSHMR_Tambourine_01.wav'
+                      && r.kick === 'KSHMR Acoustic Kick 12 - Hard.wav',
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨取值，快照里 58..96）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          dv.setViewMode('midi');
+          dv.state.hiddenTracks.clear();
+          dv.state.kindFilter = '';
+          dv.rebuildView();
+          dv.paint();
+          const v = dv.state.view;
+          const pitches = v.notes.map((n) => n.pitch);
+          return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
+                   min: Math.min(...pitches), max: Math.max(...pitches) };
+        })()`);
+        // 快照里音高 58..96（完整工程 58..99）-> 音区留 2 个半音余量
+        return { pass: r.n === 1064 && r.lo === 56 && r.hi === 98,
+                 detail: JSON.stringify(r) };
+      }],
+    ];
+
+    for (const [name, fn] of bitwigChecks) {
+      bitwigRan++;
+      step(name);
+      try {
+        const r = await fn();
+        console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.detail ?? ''}`);
+        if (!r.pass) failed++;
+      } catch (err) {
+        console.log(`  ERROR ${err.message}`);
+        failed++;
+      }
+    }
+
+    await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.lanes = [];
+      dv.setViewMode('arrange');
+      dv.state.pxPerTick = 0.06;
+      dv.state.playheadTick = 0;
+      dv.rebuildView();
+      document.getElementById('scroll').scrollLeft = 0;
+      document.getElementById('scroll').scrollTop = 0;
+      dv.paint();
+    })()`);
+    await sleep(300);
+    await shot('shot-bitwig.png');
+
+    if (existsSync(fixture)) {          // 复原固定快照
+      copyFileSync(fixture, live);
+      await evalJs(`location.reload()`);
+      await sleep(1500);
+    }
+  }
+
   const ran = (existsSync(fixture) ? checks.length : 0)
             + (existsSync(flFixture) ? flRan : 0)
             + (existsSync(reaperFixture) ? reaperRan : 0)
+            + (existsSync(bitwigFixture) ? bitwigRan : 0)
             + (existsSync(tempoFixture) ? tempoRan : 0);
   if (ran === 0) {
     console.log('\n0 项：没有数据快照，什么都没验证。');

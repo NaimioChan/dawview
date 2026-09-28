@@ -16,9 +16,10 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 | Cubase | `.cpr` | 15.0.30 WIN64 | `dawview/cpr_parser.py` |
 | FL Studio | `.flp` | 25.2.4.5242 | `dawview/flp_parser.py` |
 | REAPER | `.rpp` | 7.67/win64 | `dawview/rpp_parser.py` |
+| Bitwig Studio | `.bwproject` | 5.3.13 | `dawview/bwproject_parser.py` |
 | — | `.json` | — | 已经是 dawview 契约 JSON 就直接打开（内置示例走这条） |
 
-三种格式都是**实证逆向**出来的，线格式笔记写在各自解析器的 docstring 里
+四种格式都是**实证逆向**出来的，线格式笔记写在各自解析器的 docstring 里
 （字段偏移、事件 ID、踩过的坑）。加新宿主只要在 `dawview/app.py` 的 `PARSERS`
 注册表里登记一个"路径 → 契约字典"的函数。
 
@@ -28,21 +29,21 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 信息"、以及解析器从哪儿把它抠出来。✅ = 实测能解析；⚠ = 能解析但有前提或精度损失；
 ✗ = 工程里没有这项，或解析器还没做；— = 没验过。
 
-| 能解析的东西 | Cubase `.cpr` | FL Studio `.flp` | REAPER `.rpp` |
-|---|---|---|---|
-| 轨道清单（名字 / 数量） | ✅ | ✅（FL 固定写满 500 条，只留有内容或有名字的） | ✅ |
-| 轨道种类 | ✅ 乐器 / MIDI / 音频 / 文件夹 / 标记 / 速度 / 和弦 | ⚠ 由片段种类反推（MIDI / 音频 / 自动化 / 其他），没有"乐器"这一类 | ✅ 文件夹 / 乐器 / MIDI / 音频 |
-| 片段（位置 / 长度 / 名字） | ✅ MIDI 片段 + 音频事件 | ✅ 播放列表片段 | ✅ 音频 / MIDI 片段 |
-| MIDI 音符（音高 / 起止 / 力度） | ✅ | ✅ | ✅ |
-| CC 控制器曲线（钢琴窗曲线栏） | ✅ 实测一份工程 CC1 有 5271 个点 | ✗ FL 不存 CC | ✅ 事件流里的 `0xBn`（含每条 MIDI 源末尾的 CC123） |
-| 工程速度 | ✅ | ⚠ 没有速度事件（ID 156）时按音频片段反推，写进 `warnings` | ✅ |
-| 速度轨 → 变速播放 | ✅ 实测一份工程 1129 个变速点 | ✅ Tempo 自动化曲线（按 1/16 拍加密，忽略曲线张力） | ⚠ 定速工程已实测；多变速点那一支只过了合成工程，没真机对照 |
-| 拍号 | ✅ | ✅ | ✅ |
-| 采样率 | ⚠ 找不到 `AudioSampleRate` 就默认 44100（不报警） | ✗ 工程里不存，默认 44100 + `warnings` | ⚠ 找不到 `SAMPLERATE` 就默认 44100（不报警） |
-| 标记 / 区间 | ✗（标记轨只当一条轨道显示，轨里的标记点不读） | ⚠ 位置只取那个 u32 的低 16 位 | ✅（区间只取起点，隐藏标记跳过） |
-| 文件夹轨 | ✅ | ✗ | ✅ |
-| 自动化片段（色块） | ✗ | ✅ | ✗ |
-| 多 take / 循环片段 | — | — | ⚠ 只取第一个 take；片段标了 `LOOP 1` 而源内容比片段短时不复制音符（记 `warnings`） |
+| 能解析的东西 | Cubase `.cpr` | FL Studio `.flp` | REAPER `.rpp` | Bitwig `.bwproject` |
+|---|---|---|---|---|
+| 轨道清单（名字 / 数量） | ✅ | ✅（FL 固定写满 500 条，只留有内容或有名字的） | ✅ | ✅（从嵌入的摘要文档读，31 轨） |
+| 轨道种类 | ✅ 乐器 / MIDI / 音频 / 文件夹 / 标记 / 速度 / 和弦 | ⚠ 由片段种类反推（MIDI / 音频 / 自动化 / 其他），没有"乐器"这一类 | ✅ 文件夹 / 乐器 / MIDI / 音频 | ⚠ 摘要里给了乐器 / 音频两类，文件夹 / 编组还没做 |
+| 片段（位置 / 长度 / 名字） | ✅ MIDI 片段 + 音频事件 | ✅ 播放列表片段 | ✅ 音频 / MIDI 片段 | ⚠ MIDI 片段有位置 / 长度 / 名字；音频片段靠采样名反查轨道 |
+| MIDI 音符（音高 / 起止 / 力度） | ✅ | ✅ | ✅ | ✅（音高存在"音高轨"元素上，一条轨一个音高） |
+| CC 控制器曲线（钢琴窗曲线栏） | ✅ 实测一份工程 CC1 有 5271 个点 | ✗ FL 不存 CC | ✅ 事件流里的 `0xBn`（含每条 MIDI 源末尾的 CC123） | ✗ 还没定位到 CC 字段 |
+| 工程速度 | ✅ | ⚠ 没有速度事件（ID 156）时按音频片段反推，写进 `warnings` | ✅ | ✅（按 `TEMPO` 字段找 BPM，找不到告警并兜底 120） |
+| 速度轨 → 变速播放 | ✅ 实测一份工程 1129 个变速点 | ✅ Tempo 自动化曲线（按 1/16 拍加密，忽略曲线张力） | ⚠ 定速工程已实测；多变速点那一支只过了合成工程，没真机对照 | ✗ 只读恒定速度 |
+| 拍号 | ✅ | ✅ | ✅ | ✗ 还没定位到 |
+| 采样率 | ⚠ 找不到 `AudioSampleRate` 就默认 44100（不报警） | ✗ 工程里不存，默认 44100 + `warnings` | ⚠ 找不到 `SAMPLERATE` 就默认 44100（不报警） | ✗ 同上，默认 44100 + `warnings` |
+| 标记 / 区间 | ✗（标记轨只当一条轨道显示，轨里的标记点不读） | ⚠ 位置只取那个 u32 的低 16 位 | ✅（区间只取起点，隐藏标记跳过） | ✗ |
+| 文件夹轨 | ✅ | ✗ | ✅ | ✗ |
+| 自动化片段（色块） | ✗ | ✅ | ✗ | ✗ |
+| 多 take / 循环片段 | — | — | ⚠ 只取第一个 take；片段标了 `LOOP 1` 而源内容比片段短时不复制音符（记 `warnings`） | ⚠ 音频片段按"离它最近的样本记录 + 文件名/轨道名比对"归属，同一轨多片段时按顺序落位 |
 
 三个宿主**都还没做**的（dawview 侧的共通缺口，不是某个格式缺）：静音 / 独奏状态、工程里的
 轨道颜色（配色是 dawview 里自己配的）、音频文件内容与真实波形（只画位置和装饰波形）、
@@ -320,6 +321,33 @@ app 模式打开 —— 只需要 Python 本身，不用 `pip install` 任何东
 - **`<FREEZE>` 里的原始 item 不解析**（那是解冻时恢复用的副本，画出来音符会翻倍）；
   一个 item 只取第一个 take。
 
+## 宿主差异：Bitwig（.bwproject）
+
+`.bwproject` 是**二进制容器**（ZIP 风格的块 + 一个"元素流"文档），解析器在
+`dawview/bwproject_parser.py`。实测工程（2.0 MB / Bitwig 5.3.13）解析结果：
+124.0 BPM / 480 ppq / 31 轨道（15 乐器 + 16 音频）/ 11 个 MIDI 片段 / 2502 音符 / 16 个音频片段。
+
+线格式的骨架（细节注释都在解析器 docstring 里）：
+
+- **容器头 + meta 块**：文件前 42 字节是容器头，接着是 meta 块
+  （`[u32 条目数][key 长度][key][类型][值长度][值]` 循环），**结构摘要文档**嵌在 meta 里
+  ——工程名 / 轨道名 / 轨道种类全在这份摘要里（它本身又是一份带 42 字节头的 mini 文档）。
+- **元素流**：文档体是一串"元素"，每个元素头 15 字节 ——
+  `[6 字节标记 00 00 01 fd 01 00][u32 字段号][u8 tag][u32 class]`；
+  同一份文件里还有"增量写法"的头：`[11 个 0][u32 class]`（class 仍然落在 +11..+14）。
+  **头标记那 6 个字节也会作为普通字段出现在元素内部**，只按字节找会把元素切错位，
+  所以解析器先按"位置字段 `0x2af` 固定出现在元素头 +15"和"轨道元素 `00 00 18 cb 12`"
+  两把锚点扫出元素，再在元素内部走字段流。
+- **字段**：`[u32 字段号][u8 tag][值]`，tag `0x07` = f64（位置 / 长度 / 力度都是拍）,
+  `0x08` = UTF-8 字符串，`0x09` = u32，`0x11` / `0x01` = u8。
+- **class 表**（实测）：MIDI 片段 `0x47`、音高轨 `0x42`、音符 `0x66`、音频片段 `0xee`、
+  音频样本记录 `0xd4`、音频轨 `0xce`、端点标记 `0x43`、乐器摘要 `0x288`、音频摘要 `0x287`。
+- **音高在轨上，不在音符上**：音符元素只有位置 / 时长 / 力度，音高存在包着它的
+  "音高轨"元素里（一个音高一条轨）—— 所以不能对音符一个个取音高。
+- **归属靠启发式**：音频片段（`0xee`）没有指向轨道的引用字段，实测规律是"片段文件名
+  去掉扩展名后等于轨道名"（Bitwig 用拖进来的采样名给轨道命名，这份工程 16/16 全中）；
+  对不上就按文档顺序落到第一条空音频轨，并在 `warnings` 里说明。
+
 ## 数据契约
 
 后端解析 → 契约 JSON → 由本地 HTTP 服务（`dawview/server.py`）发给前端；同一份 JSON 也写进
@@ -344,6 +372,7 @@ dawview/          纯 Python 后端
   cpr_parser.py   Cubase .cpr 解析器（实证逆向，含格式注释）
   flp_parser.py   FL Studio .flp 解析器（事件流 + 播放列表记录，80/60/32 字节自适应）
   rpp_parser.py   REAPER .rpp 解析器（纯文本块 + 秒/ tick 换算，含格式注释）
+  bwproject_parser.py  Bitwig .bwproject 解析器（容器 + 元素流，含格式注释）
   model.py        宿主无关数据模型
   server.py       本地 HTTP 服务（静态文件 + /project.json + /events 长连接，纯标准库）
   app.py          入口：解析 → 起本地服务 → 开窗口（PARSERS 按扩展名分发）
@@ -354,9 +383,9 @@ web/              前端（原生 JS，无构建）
 docs/
   01-data-contract.md   前后端唯一接口（改契约必须两端同步）
   demo-project.json     手写的合成示例工程（README 截图 / run.bat 默认打开）
-tests/            pytest（94 项：Cubase 6 + FL 10 + REAPER 21 + 速度轨/力度/CC 16 + 本地服务 16）
+tests/            pytest（101 项：Cubase 6 + FL 10 + REAPER 21 + Bitwig 7 + 速度轨/力度/CC 16 + 本地服务 16）
 scripts/
-  verify.mjs       前端 CDP 验证（38 + 10 + 6 + 5 项，见下）
+  verify.mjs       前端 CDP 验证（38 + 10 + 6 + 4 + 5 项，见下）
   fx-probe.mjs     动效可见度量化（像素级差分）
   make-demo.py     重新生成 docs/demo-project.json
   make-fixture.py  从你的工程裁一份验证快照（快照不入库，见下）
@@ -367,14 +396,14 @@ run.bat            Windows 启动器
 ## 验证
 
 ```bash
-python -m pytest tests/ -q                       # 94 项（Cubase 6 + FL 10 + REAPER 21 + 速度轨/力度/CC 16 + 本地服务/多窗口 41）
+python -m pytest tests/ -q                       # 101 项（Cubase 6 + FL 10 + REAPER 21 + Bitwig 7 + 速度轨/力度/CC 16 + 本地服务/多窗口 41）
 
 # 前端验证：需要一个静态服务 + 一个带 CDP 的浏览器
 python -m http.server 8765 --bind 127.0.0.1 --directory web &
 "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" \
   --headless=new --remote-debugging-port=9223 \
   --user-data-dir=$LOCALAPPDATA/Temp/edge-cdp-dawview &
-node scripts/verify.mjs                          # 前端 59 项（Cubase 38 + FL 10 + REAPER 6 + 变速 5），ALL CHECKS PASSED
+node scripts/verify.mjs                          # 前端 63 项（Cubase 38 + FL 10 + REAPER 6 + Bitwig 4 + 变速 5），ALL CHECKS PASSED
 node scripts/fx-probe.mjs                        # 动效可见度量化（像素级差分）
 ```
 
@@ -396,6 +425,7 @@ node scripts/relay-verify.mjs --python py        # 指定解释器（默认 pyth
 python scripts/make-fixture.py "我的工程.cpr"     # -> scripts/fixture-project.json
 python scripts/make-fixture.py "我的工程.flp"     # -> scripts/fixture-project-fl.json
 python scripts/make-fixture.py "我的工程.rpp"     # -> scripts/fixture-project-reaper.json
+python scripts/make-fixture.py "我的工程.bwproject" # -> scripts/fixture-project-bitwig.json
 
 # 变速那 5 项要一份"真的在变速"的工程快照（.cpr/.flp 都行），单独一个开关：
 python scripts/make-fixture.py "变速工程.cpr" --out scripts/fixture-project-tempo.json
@@ -453,6 +483,12 @@ node scripts/verify.mjs --tempo-fixture scripts/fixture-project-tempo.json
   多变速点那一支是按社区 state-chunk 文档（包络点位置单位 = 秒）实现的，还没在真机上对过。
 - **REAPER 只取第一个 take**，多 take 工程会少画别的 take；片段标了 `LOOP 1` 而源内容
   比片段短时不会把源内容重复画一遍（只在 `warnings` 里说明）。
+- **Bitwig 只读恒定速度**：工程里的 TEMPO 字段拿到了，但变速轨（速度点 / 包络）还没逆向。
+- **Bitwig 的音频片段归属是启发式**：靠"采样文件名 = 轨道名"和"文档顺序"两条规则，
+  同一轨放多段音频时可能落错轨（解析器会把可疑处写进 `warnings`）。
+- **Bitwig 还没读**：CC 曲线、拍号、标记 / 区间、文件夹 / 编组轨、自动化片段、变速轨。
+- **Bitwig 只在 5.3.13 一份工程上验过**：`class` 编号和字段号是实测出来的，
+  换版本可能变（变了解析器会跳过并记 `warnings`，不会崩）。
 - **只在 Windows 上实测过**：Edge/Chrome app 模式开窗口那条路。解析、服务、前端本身
   是跨平台的，但没在别的系统上跑过 —— 非 Windows 上找不到 Edge/Chrome 的安装路径时
   会退回系统默认浏览器（有地址栏）。
