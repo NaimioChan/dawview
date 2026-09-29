@@ -651,6 +651,9 @@ const checks = [
       fxBtn.click();
       const fxPane = [...document.querySelectorAll('#menu-pane .pane.on .row-label')].map((b) => b.textContent);
       const active = document.querySelector('#menu-groups .grp.on').textContent;
+      // 「音频」分组：用户音频轨的入口（导入 / 加轨 / 吸附 / 播放 / 显示 / 存放位置）
+      [...document.querySelectorAll('#menu-groups .grp')].find((b) => b.textContent === '音频').click();
+      const audioPane = [...document.querySelectorAll('#menu-pane .pane.on .row-label')].map((b) => b.textContent);
       // 通过真实 UI 切到钢琴窗：点「视图」分组的「钢琴窗」按钮
       [...document.querySelectorAll('#menu-groups .grp')].find((b) => b.textContent === '视图').click();
       const seg = document.querySelector('#menu-pane .seg[data-item="opt-viewmode"][data-value="midi"]');
@@ -659,11 +662,12 @@ const checks = [
       dv.setViewMode('arrange');
       document.getElementById('btn-settings').click();
       const closed = menu.hidden;
-      return { opened, groups, firstPane, fxPane, active, modeAfterClick, closed };
+      return { opened, groups, firstPane, fxPane, audioPane, active, modeAfterClick, closed };
     })()`);
     return {
-      pass: r.opened && r.groups.join(',') === '显示,视图,播放,控制器,动效,配色'
+      pass: r.opened && r.groups.join(',') === '显示,视图,播放,控制器,音频,动效,配色'
             && r.firstPane.length >= 3 && r.fxPane.includes('音符闪光') && r.active === '动效'
+            && r.audioPane.includes('导入音频') && r.audioPane.includes('播放音频')
             && r.modeAfterClick === 'midi' && r.closed,
       detail: JSON.stringify(r),
     };

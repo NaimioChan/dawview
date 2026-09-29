@@ -39,6 +39,19 @@ const state = {
   // 钢琴窗下部的力度 / CC 栏（吃契约 v0.3 的 notes[].velocity 与 controllers[]）
   lanes: [],               // [{id, kind:'velocity'|'cc', cc}]，默认空 = 不显示
   laneH: 84,               // 单栏绘制区高度（px），标题条另算
+  // 用户音频轨（自己导入的音频，见 web/audio.js）—— 数据在工程旁边的
+  // .dawview/audio-lanes.json 里，跟 DAW 工程解析出来的轨道是两回事
+  audioLanes: [],          // 契约 v0.6：{id, name, muted, clips:[...]}
+  audioDir: '',            // 存哪儿（设置菜单里显示给用户看）
+  audioAvailable: false,   // 有本地服务（能导入 / 能存 / 能播）吗
+  audioWritable: true,     // 目录可写吗（只读盘上只在本次会话有效）
+  audioSnap: true,         // 拖动吸附到拍（显示偏好，存 localStorage）
+  audioPlay: true,         // 播放时出声（显示偏好）
+  audioShow: true,         // 显示音频区（显示偏好）
+  audioHover: null,        // {lane, clip, edge}：鼠标下的音频片段（画裁剪手柄用）
+  audioDrag: null,         // {lane, clip, edge, orig, readout, moved}：正在拖的片段
+  audioDrop: null,         // {tick}：文件拖到画布上时的落点提示线
+  audioSaving: false,      // 正在往服务端存
   tempo: null,             // 速度轨预处理结果（buildTempo），播放时按它变速
   remoteColors: null,      // 服务端那份轨道配色 {project, map}（boot 时拉 / 拉不到就 null）
   // 多窗口联动（OBS 浏览器源）的计数器，验证脚本读它
@@ -65,6 +78,8 @@ function currentViewPrefs() {
     kindFilter: state.kindFilter,
     lanes: state.lanes,
     laneH: state.laneH,
+    // 音频区的显示偏好（数据本身不在这儿，走 /audiolanes）
+    audioSnap: state.audioSnap, audioPlay: state.audioPlay, audioShow: state.audioShow,
   };
 }
 
@@ -113,6 +128,9 @@ const el = {
   swatchGrid: document.getElementById('swatch-grid'),
   swatchCustom: document.getElementById('swatch-custom'),
   swatchReset: document.getElementById('swatch-reset'),
+  audioFile: document.getElementById('audio-file'),
+  dropHint: document.getElementById('drop-hint'),
+  btnAudio: document.getElementById('btn-audio'),
   toast: document.getElementById('toast'),
 };
 
@@ -291,6 +309,9 @@ const CONTROL_ACTIONS = {
   track: (p) => setTrackVisible(p.index, !!p.on),
   trackall: () => toggleAllTracks(),
   sethidden: (p) => setHiddenFromRemote(p.hidden),
+  setaudiosnap: (p) => setAudioSnap(!!p.on),
+  setaudioplay: (p) => setAudioPlay(!!p.on),
+  setaudioshow: (p) => setAudioShow(!!p.on),
 };
 
 function sendControl(action, params) {
@@ -322,8 +343,11 @@ function syncTick(tick) {
   if (!state.playing) return;
   const tol = Math.min(600, Math.max(6, RELAY.TICK_PX / Math.max(state.pxPerTick, 0.001)));
   if (Math.abs(state.playheadTick - tick) <= tol) return;
+  const jump = Math.abs(state.playheadTick - tick);
   state.playheadTick = tick;
   updatePosLabel();
+  // 差得超过一小节就不是"抖一下"了：音频也跟着重排，不然声音和画面差半拍
+  if (jump > state.view.barTicks) audioStart();
   paint();
 }
 
@@ -360,6 +384,12 @@ function connectToServer() {
   });
   es.addEventListener('prefs', (e) => {
     runRemote(() => applyRemotePrefs(JSON.parse(e.data), true));
+  });
+  es.addEventListener('audiolanes', (e) => {
+    runRemote(() => {
+      const data = JSON.parse(e.data);
+      applyRemoteAudioLanes(data.lanes);
+    });
   });
   es.addEventListener('error', () => {
     // 压根没有后端（静态打开、或别的静态服务器）：关掉，别让 EventSource 一直重连刷屏
@@ -399,6 +429,9 @@ function rebuildView() {
     pitchLo: state.pitchLo,
     pitchHi: state.pitchHi,
     headW: state.showHeads ? (state.viewMode === 'midi' ? KEYS_W : HEAD_W) : 0,
+    tempo: state.tempo,           // 音频片段的右缘要按速度轨反算回 tick
+    // 用户音频轨：只在走带视图里画；「显示音频区」关掉时也不画（数据还在）
+    audioLanes: state.viewMode === 'arrange' && state.audioShow ? state.audioLanes : [],
   };
   const project = { ...state.project, tracks };
   state.view = state.viewMode === 'midi'
@@ -578,7 +611,12 @@ function setPlaying(on) {
   state.lastTs = 0;
   if (!on) state.hits = [];          // 停下就不留动效残影
   el.btnPlay.textContent = on ? '❚❚' : '▶';
-  if (on) requestAnimationFrame(frame);
+  if (on) {
+    audioStart();                    // 音频轨跟着走带一起出声
+    requestAnimationFrame(frame);
+  } else {
+    audioStop();
+  }
   if (was !== on) {
     state.relay.plays += 1;
     sendControl(on ? 'play' : 'pause');   // 别的窗口（OBS 那个画面）跟着一起动
@@ -591,13 +629,16 @@ function goHome() {
   state.hits = [];
   el.scroll.scrollLeft = 0;
   updatePosLabel();
+  if (state.playing) audioStart();     // 正在播时改变位置：音频重新排一次
   paint();
 }
 
-function seekToTick(tick) {
+// resched=false 用于"别的声音也别跳"的小幅校准（窗口联动的位置纠偏）
+function seekToTick(tick, resched = true) {
   state.playheadTick = Math.max(0, Math.min(state.view.lengthTicks, Math.round(tick)));
   state.hits = [];
   updatePosLabel();
+  if (state.playing && resched) audioStart();
   paint();
 }
 
@@ -607,6 +648,403 @@ function updatePosLabel() {
   const bpm = state.tempo ? state.tempo.bpmAt(tick) : (meta.bpm || 0);
   el.posLabel.textContent = `${barLabel(state.view, tick)} · ${bpm.toFixed(1)} BPM`;
 }
+
+/* ---------------------------------------- 用户音频轨（自己导入的音频） */
+
+/* 数据来自 GET /audiolanes.json（可写，和只读的工程契约分开传），
+   音频文件走 POST /media 上传、GET /media/<名字> 取回；播放是 Web Audio
+   （web/audio.js 的 audioEngine）。这里管三件事：取存数据、界面上的拖/裁、
+   把播放排期喂给引擎。 */
+
+const AUDIO_SAVE_MS = 250;      // 存盘防抖：拖着走的时候别每帧都发一遍
+const AUDIO_LEAD = 0.08;        // 起播提前量（秒）：排到音频时钟未来一点点，别"一上来就迟到"
+let audioSaveTimer = 0;
+let audioIdSeq = 0;
+
+function nextAudioId(prefix) {
+  audioIdSeq += 1;
+  return `${prefix}${Date.now().toString(36)}${audioIdSeq.toString(36)}`;
+}
+
+// 吸附粒度 = 一拍。速度轨只改变"一拍多长秒"，tick 域里拍长恒定，所以直接取 ppq。
+function audioGridTicks() {
+  return (state.view && state.view.beatTicks) || (state.project && state.project.meta
+    ? state.project.meta.ppq || 480 : 480);
+}
+
+// 鼠标 x -> tick（带吸附；按住 Alt 或关掉吸附就不吸）
+function audioTickAt(clientX, bypassSnap) {
+  const rect = el.canvas.getBoundingClientRect();
+  const raw = xToTick(state.view, clientX - rect.left);
+  const tick = (state.audioSnap && !bypassSnap) ? audioSnapTick(raw, audioGridTicks()) : raw;
+  return Math.max(0, Math.round(tick));
+}
+
+function audioSrcDur(clip) {
+  const info = audioEngine.info(clip.file);
+  return info && info.durSec ? info.durSec : (Number(clip.srcDurSec) || 0);
+}
+
+// 状态栏 / 拖动读数用的短标签
+function audioReadout(clip) {
+  const tempo = state.tempo;
+  const s = audioStartSec(tempo, clip);
+  const tick = Math.round(clip.startTick);
+  const bar = state.view ? barLabel(state.view, tick) : String(tick);
+  return `${bar} · +${s.toFixed(2)}s · 取 ${clip.srcOffsetSec.toFixed(2)}–`
+    + `${(clip.srcOffsetSec + clip.lengthSec).toFixed(2)}s`;
+}
+
+/* ------------------------------------------------------------ 取存数据 */
+
+async function loadAudioLanes() {
+  const data = await getJson('/audiolanes.json');
+  if (!data || typeof data !== 'object' || !data.dir) {
+    // 没有本地服务（直接开 index.html / 静态服务器）：音频区只读不了也存不了
+    state.audioAvailable = false;
+    state.audioLanes = [];
+    return false;
+  }
+  state.audioAvailable = true;
+  state.audioDir = String(data.dir);
+  state.audioWritable = data.writable !== false;
+  state.audioLanes = normAudioLanes(data.lanes);
+  return true;
+}
+
+// 存一份到服务端（防抖）：拖完松手、改完静音都会走这里
+function scheduleAudioSave() {
+  if (!state.audioAvailable) return;
+  state.audioSaving = true;
+  clearTimeout(audioSaveTimer);
+  audioSaveTimer = setTimeout(pushAudioLanes, AUDIO_SAVE_MS);
+  paint();
+}
+
+async function pushAudioLanes() {
+  const res = await postJson('/audiolanes', { lanes: state.audioLanes, client: serverClientId });
+  state.audioSaving = false;
+  if (!res || !res.ok) {
+    toast('音频轨没存上：本地服务没响应');
+  } else if (res.writable === false) {
+    state.audioWritable = false;
+    toast('工程目录写不进去：音频轨只在这次会话里有效');
+  }
+  paint();
+}
+
+// 音频轨变了之后的统一收尾：重画 + 状态栏 + 存盘。数据本身先改 state.audioLanes。
+function afterAudioChange(save = true) {
+  rebuildView();
+  updateStatusLine();
+  paint();
+  if (save) scheduleAudioSave();
+}
+
+// 别的窗口改了音频轨（SSE 广播）：照单全收，但不再回存（防回声）
+function applyRemoteAudioLanes(lanes) {
+  state.audioLanes = normAudioLanes(lanes);
+  state.audioHover = null;
+  state.audioDrag = null;
+  loadAudioPeaks();
+  afterAudioChange(false);
+}
+
+/* ------------------------------------------------------------ 导入音频 */
+
+async function uploadAudio(file) {
+  const res = await fetch(`/media?name=${encodeURIComponent(file.name)}`, {
+    method: 'POST', body: file, cache: 'no-store',
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error((err && err.error) ? err.error : `HTTP ${res.status}`);
+  }
+  return res.json();          // {file, name, bytes, sha1, dup}
+}
+
+function newAudioLane(name) {
+  const lane = { id: nextAudioId('al'), name: name || `音频 ${state.audioLanes.length + 1}`,
+                 muted: false, clips: [] };
+  state.audioLanes.push(lane);
+  return state.audioLanes.length - 1;
+}
+
+/* 导入一批文件：每个文件一轨（落在指定轨道上时就用那一条），位置放 playhead
+ * 或拖动落点。返回真正加进去的片段。 */
+async function importAudioFiles(files, opts = {}) {
+  const list = [...(files || [])];
+  if (!list.length) return [];
+  if (!state.audioAvailable) {
+    toast('音频轨要连本地服务才有（用 run.bat 打开，别直接开 index.html）');
+    return [];
+  }
+  audioEngine.ensureCtx();               // 用户操作里建上下文，浏览器才允许出声
+  const atTick = audioSnapToGrid(opts.tick !== undefined ? opts.tick : state.playheadTick);
+  const made = [];
+  for (const file of list) {
+    if (!audioExtOk(file.name)) { toast(`${file.name}：不是常见音频格式`); continue; }
+    if (file.size > AUDIO_MAX_BYTES) { toast(`${file.name}：文件太大（上限 512 MB）`); continue; }
+    try {
+      const up = await uploadAudio(file);
+      const info = await audioEngine.load(up.file);
+      if (!info || !(info.durSec > 0)) {
+        toast(`${file.name}：浏览器解不开这个编码`);
+        continue;
+      }
+      const laneIdx = (Number.isInteger(opts.lane) && opts.lane >= 0 && state.audioLanes[opts.lane])
+        ? opts.lane : newAudioLane(file.name);
+      const clip = {
+        id: nextAudioId('ac'), name: file.name, file: up.file,
+        startTick: atTick, srcOffsetSec: 0,
+        lengthSec: Math.round(info.durSec * 1e6) / 1e6,
+        srcDurSec: Math.round(info.durSec * 1e6) / 1e6,
+      };
+      state.audioLanes[laneIdx].clips.push(clip);
+      made.push(clip);
+    } catch (err) {
+      toast(`导入失败：${err.message || err}`);
+    }
+  }
+  if (made.length) {
+    state.audioShow = true;
+    afterAudioChange();
+    const dup = made.length > 1 ? `${made.length} 个文件` : made[0].name;
+    toast(`已导入 ${dup}（拖两头改长度，拖中间挪位置）`);
+  }
+  return made;
+}
+
+// 拖放 / 导入时的落点也要过一遍吸附
+function audioSnapToGrid(tick) {
+  const t = Number(tick) || 0;
+  return Math.max(0, Math.round(state.audioSnap ? audioSnapTick(t, audioGridTicks()) : t));
+}
+
+// 波形后台加载：到一份重画一次（大文件要几百毫秒）
+async function loadAudioPeaks() {
+  if (!state.audioAvailable) return 0;
+  const files = state.audioLanes.flatMap((l) => (l.clips || []).map((c) => c.file));
+  if (!files.length) return 0;
+  return audioEngine.loadAll(state.audioLanes, () => paint());
+}
+
+/* ------------------------------------------------------- 增删改（界面用） */
+
+function addAudioLaneAndShow() {
+  if (!state.audioAvailable) { toast('音频轨要连本地服务才有'); return -1; }
+  state.audioShow = true;
+  const i = newAudioLane();
+  afterAudioChange();
+  toast('加了一条音频轨：拖音频文件进这一行，或点「导入音频」');
+  return i;
+}
+
+function removeAudioClip(laneIdx, clipIdx) {
+  const lane = state.audioLanes[laneIdx];
+  if (!lane || !lane.clips[clipIdx]) return;
+  const [gone] = lane.clips.splice(clipIdx, 1);
+  if (!lane.clips.length) state.audioLanes.splice(laneIdx, 1);   // 空了就整轨收掉
+  afterAudioChange();
+  toast(`已删掉「${gone.name}」（素材还留在 .dawview/media 里）`);
+}
+
+function removeAudioLane(laneIdx) {
+  const lane = state.audioLanes[laneIdx];
+  if (!lane) return;
+  state.audioLanes.splice(laneIdx, 1);
+  afterAudioChange();
+  toast(`已删掉音频轨「${lane.name}」`);
+}
+
+function toggleAudioMute(laneIdx) {
+  const lane = state.audioLanes[laneIdx];
+  if (!lane) return;
+  lane.muted = !lane.muted;
+  afterAudioChange();
+  if (state.playing) audioStart();          // 静音立刻生效（重新排一次）
+  toast(lane.muted ? `「${lane.name}」已静音` : `「${lane.name}」恢复出声`);
+}
+
+function setAudioSnap(on) {
+  state.audioSnap = !!on;
+  saveViewPrefs();
+  sendControl('setaudiosnap', { on: state.audioSnap });
+  syncSettingsUi();
+  paint();
+}
+
+function setAudioPlay(on) {
+  state.audioPlay = !!on;
+  saveViewPrefs();
+  sendControl('setaudioplay', { on: state.audioPlay });
+  syncSettingsUi();
+  if (state.playing) audioStart();
+}
+
+function setAudioShow(on) {
+  state.audioShow = !!on;
+  saveViewPrefs();
+  sendControl('setaudioshow', { on: state.audioShow });
+  syncSettingsUi();
+  rebuildView();
+  paint();
+}
+
+/* -------------------------------------------------------------- 播放 */
+
+// 当前该从哪儿起播：播放头位置 + 提前量（排到音频时钟的未来，见 AUDIO_LEAD）
+function audioPlanNow() {
+  if (!state.audioPlay || !state.audioAvailable) return [];
+  const tempo = state.tempo;
+  const rate = state.speed > 0 ? state.speed : 1;
+  const fromSec = audioSecAtTick(tempo, state.playheadTick) + AUDIO_LEAD * rate;
+  return audioPlan(state.audioLanes, tempo, fromSec, rate);
+}
+
+function audioStart() {
+  if (!state.audioPlay || !state.audioAvailable) { audioEngine.stop(); return 0; }
+  const plan = audioPlanNow();
+  if (!plan.length) { audioEngine.stop(); return 0; }
+  return audioEngine.play(plan, AUDIO_LEAD);
+}
+
+function audioStop() {
+  audioEngine.stop();
+}
+
+/* -------------------------------------------------------------- 交互 */
+
+let audioDrag = null;          // 正在拖的状态机（放在模块级，鼠标事件里直接读）
+
+function startAudioDrag(hit, e) {
+  const lane = state.audioLanes[hit.lane];
+  const clip = lane && lane.clips[hit.clip];
+  if (!clip) return;
+  const rect = el.canvas.getBoundingClientRect();
+  const tick = xToTick(state.view, e.clientX - rect.left);
+  audioDrag = {
+    lane: hit.lane, clip: hit.clip, edge: hit.edge,
+    grabTick: tick - clip.startTick,        // 抓手与片段起点的差（拖动才跟手）
+    orig: Object.assign({}, clip),
+    moved: false, readout: audioReadout(clip),
+  };
+  state.audioDrag = { lane: hit.lane, clip: hit.clip, edge: hit.edge, readout: audioReadout(clip) };
+  el.canvas.style.cursor = hit.edge === 'body' ? 'grabbing' : 'ew-resize';
+  window.addEventListener('mousemove', onAudioDragMove);
+  window.addEventListener('mouseup', onAudioDragEnd);
+  paint();
+}
+
+function onAudioDragMove(e) {
+  if (!audioDrag) return;
+  const lane = state.audioLanes[audioDrag.lane];
+  if (!lane || !lane.clips[audioDrag.clip]) return;
+  const rect = el.canvas.getBoundingClientRect();
+  const tick = xToTick(state.view, e.clientX - rect.left);
+  const bypass = e.altKey;                  // 按住 Alt 临时不吸附
+  const grid = audioGridTicks();
+  const snapT = (t) => Math.max(0, Math.round((state.audioSnap && !bypass) ? audioSnapTick(t, grid) : t));
+  const orig = audioDrag.orig;
+  const dur = audioSrcDur(orig);
+  let next;
+  if (audioDrag.edge === 'body') {
+    next = audioMoveTo(orig, snapT(tick - audioDrag.grabTick));
+  } else if (audioDrag.edge === 'left') {
+    next = audioTrimLeft(state.tempo, orig, snapT(tick), dur);
+  } else {
+    next = audioTrimRight(state.tempo, orig, snapT(tick), dur);
+  }
+  const same = next.startTick === lane.clips[audioDrag.clip].startTick
+    && next.lengthSec === lane.clips[audioDrag.clip].lengthSec
+    && next.srcOffsetSec === lane.clips[audioDrag.clip].srcOffsetSec;
+  lane.clips[audioDrag.clip] = next;
+  audioDrag.moved = audioDrag.moved || !same;
+  state.audioDrag = {
+    lane: audioDrag.lane, clip: audioDrag.clip, edge: audioDrag.edge,
+    readout: audioReadout(next),
+  };
+  paint();
+}
+
+function onAudioDragEnd() {
+  window.removeEventListener('mousemove', onAudioDragMove);
+  window.removeEventListener('mouseup', onAudioDragEnd);
+  el.canvas.style.cursor = '';
+  const drag = audioDrag;
+  audioDrag = null;
+  state.audioDrag = null;
+  if (!drag) return;
+  const lane = state.audioLanes[drag.lane];
+  const clip = lane && lane.clips[drag.clip];
+  if (drag.moved && clip) afterAudioChange();
+  paint();
+}
+
+function audioBarClick(key) {
+  if (key === 'import') el.audioFile.click();
+  else if (key === 'add') addAudioLaneAndShow();
+  else if (key === 'snap') { setAudioSnap(!state.audioSnap); toast(state.audioSnap ? '吸附到拍：开' : '吸附：关（可以随便放）'); }
+}
+
+function audioHeadClick(hit) {
+  if (hit.kind === 'mute') toggleAudioMute(hit.lane);
+  else if (hit.kind === 'del') removeAudioLane(hit.lane);
+}
+
+// 文件拖到窗口里：提示 + 落点线 + 松手导入（拖到某条音频轨上就放那一条）
+function bindAudioDrop() {
+  const isFileDrag = (e) => {
+    const dt = e.dataTransfer;
+    if (!dt) return false;
+    return [...(dt.types || [])].includes('Files');
+  };
+  const showHint = (on) => {
+    document.body.classList.toggle('dropping', on);
+    if (el.dropHint) el.dropHint.hidden = !on;
+  };
+  document.addEventListener('dragenter', (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    showHint(true);
+  });
+  document.addEventListener('dragover', (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (state.view && state.view.mode === 'arrange') {
+      const rect = el.canvas.getBoundingClientRect();
+      const tick = audioTickAt(e.clientX, false);
+      const lane = audioLaneAt(state.view, e.clientX - rect.left,
+                               e.clientY - rect.top, state.scrollY);
+      state.audioDrop = { tick, lane };
+      paint();
+    }
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (e.relatedTarget) return;            // 还在窗口里转，别闪
+    state.audioDrop = null;
+    showHint(false);
+    paint();
+  });
+  document.addEventListener('drop', async (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    showHint(false);
+    const files = [...(e.dataTransfer.files || [])];
+    const tick = e.clientX ? audioTickAt(e.clientX, false) : state.playheadTick;
+    let lane;
+    if (state.view && state.view.mode === 'arrange') {
+      const rect = el.canvas.getBoundingClientRect();
+      lane = audioLaneAt(state.view, e.clientX - rect.left, e.clientY - rect.top, state.scrollY);
+    }
+    state.audioDrop = null;
+    await importAudioFiles(files, { tick, lane: lane >= 0 ? lane : undefined });
+    paint();
+  });
+}
+
+
 
 /* ------------------------------------------------ 钢琴窗下部：力度 / CC 栏 */
 
@@ -742,8 +1180,22 @@ function bindUi() {
   el.scroll.addEventListener('scroll', paint, { passive: true });
   window.addEventListener('resize', () => { resizeSpacer(); paint(); });
 
+  // 后台标签页里 rAF 会被节流（声音还在按音频时钟走），切回来时先停一次再重排
+  document.addEventListener('visibilitychange', () => {
+    if (!state.playing) return;
+    if (document.hidden) audioEngine.stop();
+    else audioStart();
+  });
+
   el.btnPlay.addEventListener('click', () => setPlaying(!state.playing));
   el.btnHome.addEventListener('click', () => { goHome(); sendControl('home'); });
+  if (el.btnAudio) el.btnAudio.addEventListener('click', () => el.audioFile.click());
+  el.audioFile.addEventListener('change', async () => {
+    const files = [...el.audioFile.files];
+    el.audioFile.value = '';               // 同一个文件再选一次也要能触发
+    await importAudioFiles(files, {});
+  });
+  bindAudioDrop();
 
   document.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
@@ -761,6 +1213,7 @@ function bindUi() {
     if (e.code === 'KeyH') { setClean(!isClean()); }
     if (e.code === 'KeyE') { setExportMode(!isExport()); }
     if (e.code === 'KeyM') { setViewMode(state.viewMode === 'midi' ? 'arrange' : 'midi'); }
+    if (e.code === 'KeyI') { el.audioFile.click(); }     // 导入音频
   });
 
   el.canvas.addEventListener('mousedown', (e) => {
@@ -768,19 +1221,58 @@ function bindUi() {
     const rect = el.canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    // 音频区标题条上的按钮（导入 / 加一轨 / 吸附）
+    const barKey = audioBarHit(state.view, x, y, state.scrollY);
+    if (barKey) { e.preventDefault(); audioBarClick(barKey); return; }
+    // 音频轨头的 静音 / 删除
+    const headHit = audioHeadHit(state.view, x, y, state.scrollY);
+    if (headHit) { e.preventDefault(); audioHeadClick(headHit); return; }
     // 轨道头上的色卡：点它开颜色选择器，别去动播放头
     const sw = swatchTrackAt(x, y);
     if (sw >= 0) { e.preventDefault(); toggleSwatchPop(sw, e.clientX, e.clientY); return; }
     if (x < state.view.headW) return;
     closeSwatchPop();
+    // 音频片段：拖中间挪位置、拖两头改长度
+    const hit = audioClipAt(state.view, x, y, state.scrollY, state);
+    if (hit) { e.preventDefault(); startAudioDrag(hit, e); return; }
     seekToTick(xToTick(state.view, x));
     sendControl('seek', { tick: state.playheadTick });   // OBS 画面同步跳到这个位置
   });
 
-  // 右键点色卡 = 恢复默认色
+  // 鼠标划过音频片段：画裁剪手柄 + 换光标（只在命中项变了才重画）
+  el.canvas.addEventListener('mousemove', (e) => {
+    if (state.audioDrag || !state.view || state.view.mode !== 'arrange') return;
+    const rect = el.canvas.getBoundingClientRect();
+    const hit = audioClipAt(state.view, e.clientX - rect.left, e.clientY - rect.top,
+                            state.scrollY, state);
+    const next = hit ? { lane: hit.lane, clip: hit.clip, edge: hit.edge } : null;
+    const prev = state.audioHover;
+    const same = (!next && !prev) || (next && prev && next.lane === prev.lane
+      && next.clip === prev.clip && next.edge === prev.edge);
+    if (same) return;
+    state.audioHover = next;
+    el.canvas.style.cursor = next ? (next.edge === 'body' ? 'grab' : 'ew-resize') : '';
+    paint();
+  });
+
+  // 右键点色卡 = 恢复默认色；右键点音频片段 / 轨道头 = 删掉它
   el.canvas.addEventListener('contextmenu', (e) => {
     const rect = el.canvas.getBoundingClientRect();
-    const vi = swatchTrackAt(e.clientX - rect.left, e.clientY - rect.top);
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const headHit = audioHeadHit(state.view, x, y, state.scrollY);
+    if (headHit) {
+      e.preventDefault();
+      removeAudioLane(headHit.lane);
+      return;
+    }
+    const clipHit = audioClipAt(state.view, x, y, state.scrollY, state);
+    if (clipHit) {
+      e.preventDefault();
+      removeAudioClip(clipHit.lane, clipHit.clip);
+      return;
+    }
+    const vi = swatchTrackAt(x, y);
     if (vi < 0) return;
     e.preventDefault();
     const t = state.view.tracks[vi];
@@ -944,10 +1436,13 @@ function setSemiHeight(v) {
 }
 
 function setSpeed(v) {
+  const changed = state.speed !== v;
   state.speed = v;
   saveViewPrefs();
   sendControl('setspeed', { value: v });
   syncSettingsUi();
+  // 播放中改速度：音频按新速率重排（慢了声音也慢，和宿主里一样）
+  if (changed && state.playing) audioStart();
 }
 
 function setFx(patch) {
@@ -994,6 +1489,20 @@ const SETTINGS_SPEC = [
     { id: 'opt-lane-cc', type: 'custom', label: 'CC 曲线栏', render: renderLaneEditor },
     { id: 'opt-lane-h', type: 'num', label: '单栏高度', min: LANE_H_MIN, max: LANE_H_MAX, step: 8, unit: 'px',
       get: () => Math.round(state.laneH), set: (v) => setLaneHeight(v) },
+  ]},
+  { key: 'audio', label: '音频', items: [
+    { id: 'opt-audio-import', type: 'custom', label: '导入音频', render: renderAudioImport },
+    { id: 'opt-audio-lane', type: 'custom', label: '音频轨', render: renderAudioLaneButtons },
+    { id: 'opt-audio-snap', type: 'check', label: '拖动吸附到拍',
+      hint: '拖音频时吸到最近的拍，方便对齐小节（按住 Alt 临时不吸）',
+      get: () => state.audioSnap, set: (v) => setAudioSnap(v) },
+    { id: 'opt-audio-play', type: 'check', label: '播放音频',
+      hint: '跟着走带一起出声（按播放速度变速，和宿主里的磁带式变速一样）',
+      get: () => state.audioPlay, set: (v) => setAudioPlay(v) },
+    { id: 'opt-audio-show', type: 'check', label: '显示音频区',
+      hint: '临时藏起来看工程，数据还在（快捷键 I 导入）',
+      get: () => state.audioShow, set: (v) => setAudioShow(v) },
+    { id: 'opt-audio-dir', type: 'custom', label: '存放位置', render: renderAudioDir },
   ]},
   { key: 'fx', label: '动效', items: [
     { id: 'opt-fxon', type: 'check', label: '启用播放动效', hint: '播放头扫过时给音符 / 片段加光效',
@@ -1141,6 +1650,48 @@ function renderSettingRow(item) {
 function syncSettingsUi() {
   if (!el.menu.hidden) renderMenu();
   if (!el.trackMenu.hidden) renderTrackMenu();
+}
+
+/* ------------------------------------------- 设置菜单里的音频区编辑器 */
+
+function renderAudioImport(ctl) {
+  const b = document.createElement('button');
+  b.className = 'seg';
+  b.id = 'btn-audio-import';
+  b.textContent = '选文件…';
+  b.disabled = !state.audioAvailable;
+  b.title = state.audioAvailable
+    ? '支持 mp3 / wav / ogg / flac / m4a 等（也可直接把文件拖到画布上）'
+    : '音频轨要连本地服务才有：用 run.bat / python -m dawview 打开';
+  b.addEventListener('click', () => el.audioFile.click());
+  ctl.appendChild(b);
+}
+
+function renderAudioLaneButtons(ctl) {
+  const add = document.createElement('button');
+  add.className = 'seg';
+  add.id = 'btn-audio-add';
+  add.textContent = '+ 加一轨';
+  add.disabled = !state.audioAvailable;
+  add.addEventListener('click', () => addAudioLaneAndShow());
+  ctl.appendChild(add);
+  const n = state.audioLanes.length;
+  const info = document.createElement('span');
+  info.className = 'lane-empty';
+  info.id = 'audio-lane-count';
+  info.textContent = n ? `${n} 条 · ${state.audioLanes.reduce((a, l) => a + l.clips.length, 0)} 段` : '还没有音频轨';
+  ctl.appendChild(info);
+}
+
+function renderAudioDir(ctl) {
+  const s = document.createElement('span');
+  s.className = 'lane-empty';
+  s.id = 'audio-dir-label';
+  s.textContent = state.audioAvailable
+    ? (state.audioWritable ? state.audioDir : `${state.audioDir}（写不进去：只在本窗口有效）`)
+    : '（没连本地服务）';
+  s.title = s.textContent;
+  ctl.appendChild(s);
 }
 
 /* ------------------------------------------------------------ 轨道颜色 */
@@ -1569,14 +2120,20 @@ function zoomRows(factor, clientY) {
   const rect = el.scroll.getBoundingClientRect();
   const viewY = clientY === undefined ? el.scroll.clientHeight / 2 : clientY - rect.top;
   const cur = midi ? state.semiH : state.rowH;
-  const rowIdx = (viewY + state.scrollY - getRulerH()) / cur;
+  const cy = viewY + state.scrollY;
+  // 鼠标压在哪个区：音频区（标题条之后）还是工程轨道区 —— 两段的行顶基准不同
+  const inAudio = !midi && cy < audioRowsBottom(state.view);
+  const base = midi ? getRulerH() : (inAudio ? rulerH + audioBarH(state.view) : audioRowsBottom(state.view));
+  const rowIdx = (cy - base) / cur;
   const next = midi
     ? Math.min(SEMI_H_MAX, Math.max(SEMI_H_MIN, cur * factor))
     : Math.min(ROW_H_MAX, Math.max(ROW_H_MIN, cur * factor));
   if (Math.abs(next - cur) < 0.01) return;
   if (midi) state.semiH = next; else state.rowH = next;
   rebuildView();
-  el.scroll.scrollTop = Math.max(0, getRulerH() + rowIdx * next - viewY);
+  const baseNew = midi ? getRulerH()
+    : (inAudio ? rulerH + audioBarH(state.view) : audioRowsBottom(state.view));
+  el.scroll.scrollTop = Math.max(0, baseNew + rowIdx * next - viewY);
   saveViewPrefs();
   sendControl(midi ? 'setsemih' : 'setrowh', { value: next });
   paint();
@@ -1704,6 +2261,10 @@ function applyViewPrefs(p = loadViewPrefs()) {
   if (typeof p.laneH === 'number' && isFinite(p.laneH)) {
     state.laneH = Math.min(LANE_H_MAX, Math.max(LANE_H_MIN, Math.round(p.laneH)));
   }
+  // 音频区的显示偏好（数据本身走 /audiolanes，不在这儿）
+  if (typeof p.audioSnap === 'boolean') state.audioSnap = p.audioSnap;
+  if (typeof p.audioPlay === 'boolean') state.audioPlay = p.audioPlay;
+  if (typeof p.audioShow === 'boolean') state.audioShow = p.audioShow;
   if (typeof p.showHeads === 'boolean') state.showHeads = p.showHeads;
   if (typeof p.showChrome === 'boolean') {
     state.showChrome = p.showChrome;
@@ -1751,8 +2312,11 @@ function updateStatusLine() {
     (a, t) => a + t.clips.reduce((b, c) => b + (c.notes ? c.notes.length : 0), 0), 0);
   const nTracks = state.project.tracks.length;
   const hid = state.hiddenTracks.size;
+  const audio = state.audioLanes.length
+    ? ` · 音频轨 ${state.audioLanes.length}（${state.audioLanes.reduce((a, l) => a + l.clips.length, 0)} 段）`
+    : '';
   el.status.textContent =
-    `${nTracks} 轨道${hid ? `（隐藏 ${hid}）` : ''} · ${nClips} 片段 · ${nNotes} 音符 · `
+    `${nTracks} 轨道${hid ? `（隐藏 ${hid}）` : ''} · ${nClips} 片段 · ${nNotes} 音符${audio} · `
     + `长度 ${bar} 小节${dur} · ${tempoText} · 数据来源 ${src}`;
 }
 
@@ -1803,6 +2367,12 @@ async function boot() {
   loadTrackColors();      // 这个工程上次调过的轨道颜色
   mergeRemoteColors();    // 服务端那份（有的话以它为准）
   state.tempo = buildTempo(state.project);   // 速度轨（变速播放用）
+  await loadAudioLanes();    // 用户自己导入的音频轨（没连本地服务就是空的、只读不了）
+  // 没有本地服务时音频轨用不了：按钮直接置灰，别让人白点
+  if (el.btnAudio) el.btnAudio.disabled = !state.audioAvailable;
+  if (el.btnAudio) el.btnAudio.title = state.audioAvailable
+    ? '导入音频文件（快捷键 I）—— 也可以直接把文件拖进来'
+    : '音频轨要连本地服务才有（用 run.bat / python -m dawview 打开）';
 
   rebuildView();
   state.playheadTick = 0;
@@ -1810,6 +2380,7 @@ async function boot() {
   updateStatusLine();
   renderTrackMenu();
   paint();
+  loadAudioPeaks();          // 波形解码是异步的，解好一份重画一次
 
   window.dawview = {   // 便于自动化验证
     state, paint, setPlaying, setClean, isClean, setClipNames, setFollowMode,
@@ -1833,6 +2404,13 @@ async function boot() {
     CONTROL_ACTIONS, RELAY, sendControl, pushPrefs, pullPrefs, currentViewPrefs,
     mergeRemoteColors, applyZoomTo, setLanesFromRemote, setHiddenFromRemote,
     goHome, seekToTick, syncTick, maybeSyncTick, normalizeLanes,
+    // 用户音频轨：验证脚本和手动调试都走这些
+    importAudioFiles, uploadAudio, loadAudioLanes, pushAudioLanes, scheduleAudioSave,
+    addAudioLaneAndShow, removeAudioLane, removeAudioClip, toggleAudioMute,
+    setAudioSnap, setAudioPlay, setAudioShow, audioStart, audioStop, audioPlanNow,
+    audioReadout, audioSrcDur, audioSnapToGrid, audioTickAt, audioGridTicks,
+    audioBarClick, audioHeadClick, startAudioDrag, onAudioDragMove, onAudioDragEnd,
+    applyRemoteAudioLanes, loadAudioPeaks, audioEngine, normAudioLanes,
     getClientId: () => serverClientId,
     isHost: () => IS_HOST,
     hasLocalPrefs,

@@ -3,6 +3,12 @@
 > 解析器（Python 后端）与 WebUI 前端之间的唯一接口。
 > 改契约 = 改这个文件头部 changelog + 两端同步。
 > 方向：后端 → 前端单向推送（`loadProject`），前端不回传数据。
+>
+> 注：**用户自己导入的音频轨（AudioLane）不在本契约里**。那是"用户素材 + 界面上的改动"，
+> 必须能回写，和这份只读契约方向相反 —— 所以单开了一条可写通道
+> （`GET /audiolanes.json` / `POST /audiolanes` / `POST /media` / `GET /media/<名字>`，
+> 实现见 `dawview/audiolanes.py`，用法见 README「用户音频轨」一节）。
+> 本文件只描述"从工程文件解析出来的只读数据"。
 
 ## Changelog
 - v0.5 (2026-09-28): 支持 Bitwig Studio `.bwproject`。`host` 加 `bitwig`；ppq 480（Bitwig 内部就是
