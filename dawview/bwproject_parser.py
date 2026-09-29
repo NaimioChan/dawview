@@ -1,6 +1,6 @@
 """Bitwig Studio `.bwproject` parser (reverse-engineered against Bitwig 5.3.13).
 
-实测工程："25.6.30 house.bwproject"（31 轨 / 2502 音符 / 548 个音频样本记录）。
+实测工程："25.6.30 house.bwproject"（31 轨 / 2363 音符 / 548 个音频样本记录）。
 本文件是线格式（wire format）笔记的权威位置，契约见 docs/01-data-contract.md。
 
 ======================= 容器 =======================
@@ -29,7 +29,7 @@ meta 里有用的是：application_version_name（宿主版本）、creator、re
     0x0a = 0B（引用）     0x15 = 8B   0x19 = [u32 count]
     流里还会出现 4 字节全 0（空槽 / 列表分隔）。
 实测字段（**0x2af 永远紧跟元素头 +15 处，用它当元素锚点**）：
-    0x2af f64  位置（拍 = 四分音符；音符是相对片段起点）
+    0x2af f64  位置（拍 = 四分音符；音符是相对片段**内容窗口**起点，见下）
     0x26  f64  长度 / 时值（拍）
     0xef  f64  音符力度 0..1           0xf0 f64 释放力度
     0x2dfc f64 概率 0..1（实测 1.0）
@@ -53,6 +53,14 @@ meta 里有用的是：application_version_name（宿主版本）、creator、re
 **音频组 → class 0x287 的混合轨（各 16 个）**；数量对不上就退回按列表头下标并写 warning。
 （只按"列表头下标 = 轨道下标"会让 MIDI 片段整体错 4 行 —— 用户就是照 Bitwig 发现的。）
 音频片段的采样名只在**每组第一段的样本记录**里出现，后面的记录没有 → 顺着往前补。
+**片段内容窗口**（音符摆放的关键）：片段记录尾部有一对子记录
+`{0x98c: …}` + `(0x2af, f64 起)` 和 `{0x98d: …}` + `(0x2af, f64 止)`，是**该片段显示 pattern
+里的哪一段**（pattern 坐标，单位拍）。片段时长 == 窗口长（实测 44 个 MIDI 片段里 43 个严格相等，
+剩下 1 个差 0.25 拍），所以对应关系是"片段左缘 ↔ 窗口起点"：
+    **音符显示位置 = 片段起点 + (音符位置 - 窗口起点)**
+窗口起点不为 0 的片段（实测 5 个，比如吉他轨第一段窗口 -1..32、时长 33 拍）如果按窗口起点 0 摆放，
+整段音符就会整体偏移一个"窗口起点"——用户照 Bitwig 看出来的就是这个。
+窗口之外的音符在 Bitwig 里不属于这个片段（不显示、不播放），解析时丢弃。
 嵌入的**摘要文档**（meta 的 "structure" blob）：只有轨道清单，写成
     (0xace, tag 0x12, class 0x288) / [u32 0][u32 class] + (0xad1, utf8 轨道名)
 class：0x288 = 乐器轨  0x287 = 音频轨  0x28a = FX 返回轨  0x28b = Master
@@ -112,6 +120,11 @@ TRACK_SLOT_ID = b"\x00\x00\x02\x38\x09"
 CLIP_OWNER_ID = b"\x00\x00\x02\x88\x09"
 CLIP_OWNER_MIDI, CLIP_OWNER_AUDIO = 0xBF, 0x105
 CLIP_PROLOGUE = 32                       # 位置字段到"宿主 class"字段的固定距离
+
+# 片段内容窗口：片段记录尾部的一对子记录，各自后面跟一个 (0x2af, f64) —— 该片段显示的
+# pattern 区间 [起, 止]（pattern 坐标，单位拍）。音符位置是 pattern 坐标，显示时要减去窗口起点。
+WIN_IDS = (0x98C, 0x98D)
+WIN_TAG = 0x09
 
 # ---- 字段号 ----
 F_POS, F_LEN = 0x2AF, 0x26
@@ -393,6 +406,29 @@ def _clip_head(d: bytes, h: int, stop: int) -> tuple[float, float]:
     return start, length
 
 
+def _clip_window(d: bytes, h: int, stop: int) -> tuple[float, float] | None:
+    """片段的内容窗口 [起, 止]（pattern 坐标，单位拍），读不到返回 None。
+
+    片段记录尾部有一对子记录 `{0x98c: …}` / `{0x98d: …}`，各自后面跟一个 (0x2af, f64)，
+    实测就是"这个片段显示 pattern 里的哪一段"。音符位置是 pattern 坐标，所以
+    显示位置 = 片段起点 + (音符位置 - 窗口起点)。
+    """
+    end = min(stop, h + 512)
+    vals: list[float] = []
+    for ident in WIN_IDS:
+        i = d.find(struct.pack(">I", ident) + bytes([WIN_TAG]), h, end)
+        if i < 0:
+            return None
+        j = d.find(POS_ID, i, min(end, i + 64))
+        if j < 0:
+            return None
+        vals.append(_f64(d, j + 5))
+    lo, hi = min(vals), max(vals)
+    if not (-1e6 < lo <= hi < 1e6):
+        return None
+    return lo, hi
+
+
 def _lane_footers(d: bytes, start: int, stop: int) -> list[tuple[int, int]]:
     """音高轨的 footer 表：[(footer 偏移, MIDI 音高), ...]。
 
@@ -547,6 +583,7 @@ def parse_bwproject(path: str | Path) -> Project:
     clip_seq = 0
     clip_clips: list[Clip] = []
     clip_offs: list[int] = []
+    clip_wins: list[tuple[float, float] | None] = []      # 每个 MIDI 片段的内容窗口
 
     # 片段组的轨道归属：**组下标 ≠ 轨道下标** —— 文档里还夹着 4 个"空组"（实测是 FX 轨和
     # Master 的，它们本来就没片段），所以按"能放这种片段的轨道"的顺序对齐：
@@ -580,6 +617,8 @@ def parse_bwproject(path: str | Path) -> Project:
         clip_seq += 1
         clip_clips.append(clip)
         clip_offs.append(h)
+        # 内容窗口只有 MIDI 片段要（音符是按 pattern 坐标存的）
+        clip_wins.append(_clip_window(d, h, stop) if kind == "midi" else None)
         ti = slot_map.get((kind, si), si)
         if 0 <= ti < len(tracks):
             tracks[ti].clips.append(clip)
@@ -589,6 +628,7 @@ def parse_bwproject(path: str | Path) -> Project:
     no_vel = 0
     no_pitch = 0
     orphan = 0
+    outside = 0                                    # 落在片段内容窗口之外、被丢掉的音符
 
     for h, cls, nxt in spans:
         if cls != CLS_NOTE:
@@ -608,6 +648,15 @@ def parse_bwproject(path: str | Path) -> Project:
                 length = float(val)
             elif ident == F_VEL:
                 vel = float(val)
+        # 音符位置是 pattern 坐标：先按内容窗口裁掉不属于本片段的，再减窗口起点换算成
+        # "相对片段左缘"。窗口起点实测多数是 0，但有 5 个片段不是 0（见文件头说明）。
+        win = clip_wins[k] if k < len(clip_wins) else None
+        if win is not None:
+            w0, w1 = win
+            if start < w0 - 1e-6 or start > w1 + 1e-6:
+                outside += 1
+                continue
+            start = max(0.0, start - w0)
         # 音高：从这个音符记录的锚点（概率字段 0x2dfc）往后数第一个 lane footer
         anchor = d.find(CHANCE_ID, h, min(nxt, h + 240))
         pitch = None
@@ -633,6 +682,13 @@ def parse_bwproject(path: str | Path) -> Project:
             f"{no_pitch} 个音符后面没有音高轨 footer（0xee），按 C4 兜底")
     if orphan:
         proj.warnings.append(f"{orphan} 个音符不在任何 MIDI 片段区间里，已跳过")
+    if outside:
+        proj.warnings.append(
+            f"{outside} 个音符落在片段的内容窗口之外（Bitwig 里不属于该片段），已跳过")
+    no_win = sum(1 for k, w in enumerate(clip_wins) if w is None and clip_objs[k][1] == "midi")
+    if no_win:
+        proj.warnings.append(
+            f"{no_win} 个 MIDI 片段没读到内容窗口字段（0x98c/0x98d），音符按窗口起点 0 摆放")
 
     # --- 音频片段：片段里紧跟的 0xd4 记录 = 它的样本文件 ---
     # 轨道归属已经按"片段列表头"定好了，这里只把文件名补上去。

@@ -2229,7 +2229,7 @@ try {
   // .bwproject 是二进制容器：头部 + meta 块 + "元素流"文档。片段的位置/时长写在片段
   // 自己的字段区里（复制粘贴出来的副本各自是独立片段对象）；音高不在音符元素上，一个
   // 音高一条"音高轨"，音高写在 lane footer 里，取"音符后面第一个 footer"。
-  // 这一段验证契约字段（31 轨 / 44 MIDI 片段 / 2502 音符 / 548 音频片段）和前端画法。
+  // 这一段验证契约字段（31 轨 / 44 MIDI 片段 / 2363 音符 / 548 音频片段）和前端画法。
   let bitwigRan = 0;
   if (existsSync(bitwigFixture)) {
     step(`Bitwig 工程快照（${bitwigFixture.split(/[\/]/).pop()}）`);
@@ -2250,7 +2250,7 @@ try {
                  detail: JSON.stringify(t) };
       }],
 
-      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 1064 音符）', async () => {
+      ['Bitwig 轨道/片段/音符总数（快照裁剪后：3 乐器 + 3 音频 + 3 总线 / 981 音符）', async () => {
         const d = await evalJs(`(() => {
           const s = window.dawview.state.project, tk = {}, ck = {};
           let notes = 0;
@@ -2263,10 +2263,10 @@ try {
           }
           return { tracks: s.tracks.length, tk, ck, notes };
         })()`);
-        // 完整工程是 31 轨 / 44 MIDI 片段 / 548 音频片段 / 2502 音符；
+        // 完整工程是 31 轨 / 44 MIDI 片段 / 548 音频片段 / 2363 音符；
         // 快照按 make-fixture 的规则只留每类 3 轨、每轨最多 6 个片段
         return { pass: d.tracks === 9 && d.tk.instrument === 3 && d.tk.audio === 3
-                      && d.tk.bus === 3 && d.ck.midi === 14 && d.ck.audio === 18 && d.notes === 1064,
+                      && d.tk.bus === 3 && d.ck.midi === 14 && d.ck.audio === 18 && d.notes === 981,
                  detail: JSON.stringify(d) };
       }],
 
@@ -2303,6 +2303,26 @@ try {
                  detail: JSON.stringify(r) };
       }],
 
+      ['Bitwig 片段的"内容窗口"用上了：吉他轨第一段的音符按窗口起点 -1 拍摆放', async () => {
+        // 片段记录尾部那对 {0x98c}/{0x98d} 存的是"这个片段显示 pattern 里的哪一段"（pattern
+        // 坐标）。吉他轨第一段（7..40 拍）窗口是 -1..32、比其他段宽 1 拍 —— 按窗口起点 0 摆
+        // 整段音符就整体差 1 拍（用户照 Bitwig 看出来的那个）。
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const g = s.tracks.find((t) => t.name === 'Ample Guitar SJ');
+          const c0 = g.clips[0], c1 = g.clips[1];
+          const at = (c) => Math.min(...c.notes.map((n) => n.startTick));
+          return { c0Start: c0.startTick / 480, c0Len: c0.lengthTick / 480, c0First: at(c0) / 480,
+                   c1First: at(c1) / 480, c0Notes: c0.notes.length, c1Notes: c1.notes.length };
+        })()`);
+        // 第一段：片段起点 7 拍、里面第一个音符是起拍装饰音（相对 0.875 拍 → 绝对 7.875 拍；
+        // 不按窗口挪的话这里会是 -0.125 拍）；第二段窗口起点是 0，音符相对位置不挪，
+        // 但它那个 -1/8 拍的起拍音落在窗口外、被丢掉（55 → 54）
+        return { pass: r.c0Start === 7 && r.c0Len === 33 && r.c0First === 0.875
+                      && r.c1First === 0 && r.c0Notes === 59 && r.c1Notes === 54,
+                 detail: JSON.stringify(r) };
+      }],
+
       ['钢琴窗：Bitwig 的音符画出来了（音高按音高轨 footer 取值，快照里 37..96）', async () => {
         const r = await evalJs(`(() => {
           const dv = window.dawview;
@@ -2316,8 +2336,8 @@ try {
           return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
                    min: Math.min(...pitches), max: Math.max(...pitches) } ;
         })()`);
-        // 快照里是 3 条乐器轨的 1064 个音符（音高 37..96）-> 音区留 2 个半音余量
-        return { pass: r.n === 1064 && r.lo === 35 && r.hi === 98,
+        // 快照里是 3 条乐器轨的 981 个音符（音高 37..96）-> 音区留 2 个半音余量
+        return { pass: r.n === 981 && r.lo === 35 && r.hi === 98,
                  detail: JSON.stringify(r) };
       }],
     ];

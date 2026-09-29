@@ -10,7 +10,8 @@
    **(c)** 元素内部也会出现 6 字节头标记（字段 0x1fd 是列表分隔符）。
 2. 真实工程（文件在才跑）—— projects/25.6.30 house.bwproject 是 ground truth：
    124 BPM / 31 轨 / **44 个 MIDI 片段 + 548 个音频片段**（用户把 8 小节循环复制粘贴了
-   很多遍）/ 2502 个音符，且每条音频轨的片段名都是它自己的采样文件。
+   很多遍）/ **2363 个音符**（另有 139 个落在片段内容窗口之外，Bitwig 里不属于那些片段），
+   且每条音频轨的片段名都是它自己的采样文件。
 """
 from __future__ import annotations
 
@@ -85,6 +86,16 @@ def clip_prologue(pos: float, length: float, owner: int) -> bytes:
     return ff64(0x2AF, pos) + ff64(0x26, length) + fu8(0x10F8, 0) + fu32(0x288, owner)
 
 
+def clip_window(start: float, stop: float) -> bytes:
+    """片段记录尾部的内容窗口：[起, 止] 两条子记录，各自后面跟一个 (0x2af, f64)。
+
+    实测含义 = 这个片段显示 pattern 里的哪一段（pattern 坐标，单位拍）。
+    音符位置是 pattern 坐标，显示位置 = 片段起点 + (音符位置 - 窗口起点)。
+    """
+    return (fu32(0x98C, 0x269) + ff64(0x2AF, start)
+            + fu32(0x98D, 0x268) + ff64(0x2AF, stop))
+
+
 def bw_doc(body: bytes, root_cls: int = 0x285) -> bytes:
     return b"BtWg" + b"0003000200" + HEADER_TAIL + b"\x0a" + u32(root_cls) + body
 
@@ -117,8 +128,10 @@ def synth_project() -> bytes:
 
     # --- 轨道 1（Guitar）的片段列表头 ---
     body += fu32(0x238, 0x52)
-    # 片段 1：带完整元素头，名字写在片段自己的字段区里
-    body += elem(0x47, 0x21F, clip_prologue(4.0, 8.0, OWNER_MIDI) + fstr(0x236, "Verse"))
+    # 片段 1：带完整元素头，名字写在片段自己的字段区里；**内容窗口起点是 -1 拍**
+    # （片段长 8 拍、窗口 -1..7），三个音符是 pattern 坐标，所以要整体往后挪 1 拍
+    body += elem(0x47, 0x21F, clip_prologue(4.0, 8.0, OWNER_MIDI) + fstr(0x236, "Verse")
+                 + clip_window(-1.0, 7.0))
     body += elem(0x42, 0x18CB, b"")                          # 音高轨（音高 60）
     body += elem(0x66, 0x21F, ff64(0x2AF, 0.0) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
                  + u32(0) + ff64(0xEF, 1.0))
@@ -129,12 +142,21 @@ def synth_project() -> bytes:
     body += elem(0x66, 0x21F, ff64(0x2AF, 2.0) + ff64(0x26, 1.0) + fu8(0x10F8, 0)
                  + u32(0) + ff64(0xEF, 0.75))
     body += fu8(0xEE, 67)
-    # 片段 2：**紧凑元素头**的副本（同一轨的第二段），没名字、一个音符
-    body += bare_elem(0x47, clip_prologue(12.0, 4.0, OWNER_MIDI))
+    # 片段 2：**紧凑元素头**的副本（同一轨的第二段），没名字；窗口起点 0（不用挪），
+    # 并且多带一个**窗口之外**的音符（pattern 6.0 拍，窗口只到 4 拍）—— 应当被丢掉
+    body += bare_elem(0x47, clip_prologue(12.0, 4.0, OWNER_MIDI) + clip_window(0.0, 4.0))
     body += elem(0x42, 0x18CB, b"")
     body += elem(0x66, 0x21F, ff64(0x2AF, 0.5) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
                  + u32(0) + ff64(0xEF, 0.5))
+    body += elem(0x66, 0x21F, ff64(0x2AF, 6.0) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
+                 + u32(0) + ff64(0xEF, 0.5), incremental=True)
     body += fu8(0xEE, 55)
+    # 片段 3：**没有窗口字段**的老写法 —— 退回"窗口起点 = 0"，只写 warning
+    body += bare_elem(0x47, clip_prologue(20.0, 2.0, OWNER_MIDI))
+    body += elem(0x42, 0x18CB, b"")
+    body += elem(0x66, 0x21F, ff64(0x2AF, 0.5) + ff64(0x26, 0.5) + fu8(0x10F8, 0)
+                 + u32(0) + ff64(0xEF, 0.5))
+    body += fu8(0xEE, 62)
 
     # --- 轨道 2（Drums）的片段列表头 + 两个音频片段（各带自己的样本记录）---
     body += fu32(0x238, 0x53)
@@ -180,21 +202,28 @@ def test_synth_tracks(synth):
 
 
 def test_synth_midi_clips_and_notes(synth):
-    """同一轨两段（第二段是复制粘贴出来的副本），两段都得在，音符各归各的。"""
+    """同一轨三段（第二/三段是复制粘贴出来的副本），三段都得在，音符各归各的。"""
     track = synth["tracks"][0]
-    assert len(track["clips"]) == 2
-    first, second = track["clips"]
+    assert len(track["clips"]) == 3
+    first, second, third = track["clips"]
     assert first["name"] == "Verse" and first["kind"] == "midi"
     assert first["startTick"] == 4.0 * 480          # 拍 → tick
     assert first["lengthTick"] == 8.0 * 480
+    # 内容窗口起点 -1 拍 → 三个音符（pattern 坐标 0 / 1 / 2 拍）整体往后挪 1 拍
     assert [(n["startTick"], n["lengthTick"], n["pitch"]) for n in first["notes"]] == [
-        (0.0, 240.0, 60), (480.0, 120.0, 60), (960.0, 480.0, 67)]
+        (1.0 * 480, 240.0, 60), (2.0 * 480, 120.0, 60), (3.0 * 480, 480.0, 67)]
     assert [n["velocity"] for n in first["notes"]] == [127, 64, 95]   # 0..1 → 1..127
 
     assert second["name"] == ""                     # 副本没起名字
     assert second["startTick"] == 12.0 * 480
     assert second["lengthTick"] == 4.0 * 480
+    # 窗口 0..4 拍：pattern 6.0 拍那个音符在窗口外（Bitwig 里不属于这一段）→ 丢掉
     assert [(n["startTick"], n["pitch"]) for n in second["notes"]] == [(240.0, 55)]
+
+    assert third["name"] == "" and third["startTick"] == 20.0 * 480
+    assert [(n["startTick"], n["pitch"]) for n in third["notes"]] == [(240.0, 62)]
+    assert any("没读到内容窗口字段" in w for w in synth["warnings"])
+    assert any("落在片段的内容窗口之外" in w for w in synth["warnings"])
 
 
 def test_synth_audio_clips(synth):
@@ -257,14 +286,15 @@ def test_real_project():
     assert [c["startTick"] / 480 for c in guitar["clips"]] == [7.0, 40.0, 72.0, 104.0, 136.0, 168.0]
 
     notes = [n for c in midi for n in c["notes"]]
-    assert len(notes) == 2502
+    assert len(notes) == 2363
     assert all(0 <= n["pitch"] <= 127 and 1 <= n["velocity"] <= 127 for n in notes)
     # 音高写在音高轨 footer 上（按"音符后面第一个 footer"取）：
     # 每个有音符的片段都得有一把真音高，不能被兜底成一条水平线
+    # （1 拍长的小片段内容窗口只有 1 拍，里面本来就 3 个音符 → 不参与这条）
     for t in tracks:
         for c in t["clips"]:
             ps = [n["pitch"] for n in c["notes"]]
-            if ps:
+            if ps and c["lengthTick"] >= 4 * 480:
                 assert len(set(ps)) >= 5, (t["name"], sorted(set(ps)))
     by_track = {t["name"]: [n["pitch"] for c in t["clips"] for n in c["notes"]] for t in tracks}
     assert min(by_track["Ample Guitar SJ"]) == 40                  # 吉他 40..96
@@ -279,8 +309,22 @@ def test_real_project():
     for t in tracks[11:15]:
         assert not [n for c in t["clips"] for n in c["notes"]], t["name"]
     assert not any("没有音高轨 footer" in w for w in r["warnings"])
-    # 音符位置基本落在 1/32 网格上：实测 2502 个里只有 9 个是离网格的
-    # （6 个 -1/8 拍的负起点 + 吉他轨上 3 个手拖过的小数起点）
+    # --- 片段内容窗口（0x98c/0x98d）：音符显示位置 = 片段起点 + (音符位置 - 窗口起点) ---
+    # 吉他轨第一段（7..40 拍）窗口是 -1..32，比其他段宽 1 拍 —— 用户对着 Bitwig 看出来的
+    # "整段音符往前挪了一拍" 就是它：按窗口起点 0 摆会整体差 1 拍
+    assert any("落在片段的内容窗口之外" in w for w in r["warnings"])
+    assert not any("没读到内容窗口字段" in w for w in r["warnings"])   # 44 段都读到了
+    g0 = guitar["clips"][0]
+    rel = sorted(n["startTick"] / 480 for n in g0["notes"])
+    assert rel[0] == pytest.approx(0.875, abs=1e-6)      # 起拍前的装饰音
+    assert (g0["startTick"] / 480) + rel[0] == pytest.approx(7.875, abs=1e-6)
+    assert abs(rel[-1] - 32.875) < 1e-6
+    # 窗口起点为 0 的段：音符相对位置不变（还是 pattern 坐标）
+    assert min(n["startTick"] / 480 for n in guitar["clips"][1]["notes"]) == pytest.approx(0.0)
+    # 吉他 T 轨那个 1 拍长的片段（135..136）窗口只有 1 拍 → 只剩窗口内的 3 个音符
+    short = [c for c in tracks[1]["clips"] if c["lengthTick"] <= 480]
+    assert [len(c["notes"]) for c in short] == [3]
+    # 音符位置基本落在 1/32 网格上：实测 2363 个里 6 个是离网格的（用户手拖过的小数起点）
     off_grid = [n for n in notes if abs(n["startTick"] % 60.0) > 1e-6]
     assert len(off_grid) <= 12, off_grid
 
