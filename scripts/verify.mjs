@@ -239,16 +239,43 @@ const checks = [
     return { pass: r.x0 === r.x1 && r.h0 === r.h1, detail: JSON.stringify(r) };
   }],
 
-  ['标尺点击可定位', async () => {
+  ['标尺点击可定位（横向滚动后也要准）', async () => {
+    // 片段/音符是按内容坐标画的（画的时候减了 scrollX），点标尺定位必须先把滚动量加回去。
+    // 老写法漏加 scrollX：内容一宽过视口（缩放 >100%）就有滚动量，点哪儿都偏左一个滚动量，
+    // 看着像"只在某个缩放下定位错"。这里逐档对比"点下去的那一像素"和"播放头画在哪一像素"。
     const r = await evalJs(`(() => {
-      const c = document.getElementById('tl');
-      const rect = c.getBoundingClientRect();
-      const x = rect.left + 200 + 150;
-      c.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: x, clientY: rect.top + 10 }));
       const s = window.dawview.state;
-      return { tick: s.playheadTick, pos: document.getElementById('pos-label').textContent };
+      const scroll = document.getElementById('scroll');
+      const el = document.getElementById('tl');
+      const xToTick = (v, x) => Math.max(0, (x - v.headW) / v.pxPerTick);
+      const tickToX = (v, t) => v.headW + t * v.pxPerTick;
+      const keep = { px: s.pxPerTick, sx: s.scrollX, tick: s.playheadTick };
+      const out = [];
+      for (const [pxPerTick, want] of [[0.03, 0], [0.0444, 0], [0.0444, 400],
+                                       [0.0444, 700], [0.12, 900]]) {
+        window.dawview.applyZoomTo({ pxPerTick, anchorTick: 0, anchorFrac: 0 });
+        scroll.scrollLeft = want;
+        s.scrollX = scroll.scrollLeft;                 // 无头环境下滚动事件不一定及时
+        window.dawview.paint();
+        const rect = el.getBoundingClientRect();
+        const clickX = 300 + (want ? 120 : 0);
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true,
+          clientX: rect.left + clickX, clientY: rect.top + 10 }));
+        const drawn = tickToX(s.view, s.playheadTick) - s.scrollX;
+        out.push({ pxPerTick, scrollLeft: s.scrollX, clickX,
+                   tick: s.playheadTick,
+                   wantTick: Math.round(xToTick(s.view, clickX + s.scrollX)),
+                   dTick: s.playheadTick - Math.round(xToTick(s.view, clickX + s.scrollX)),
+                   dPix: Math.round(drawn - clickX) });
+      }
+      window.dawview.applyZoomTo({ pxPerTick: keep.px, anchorTick: 0, anchorFrac: 0 });
+      scroll.scrollLeft = keep.sx; s.scrollX = scroll.scrollLeft;
+      s.playheadTick = keep.tick; window.dawview.paint();
+      return { out, back: scroll.scrollLeft === keep.sx };
     })()`);
-    return { pass: r.tick > 0, detail: JSON.stringify(r) };
+    const bad = r.out.filter((o) => Math.abs(o.dPix) > 2 || Math.abs(o.dTick) > 2);
+    return { pass: r.out.length === 5 && bad.length === 0 && r.back,
+             detail: JSON.stringify(r.out) + (bad.length ? ' 不合格档位=' + JSON.stringify(bad) : '') };
   }],
 
   ['缩放改变内容宽度', async () => {

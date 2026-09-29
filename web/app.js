@@ -633,6 +633,19 @@ function goHome() {
   paint();
 }
 
+// 画布上的横向坐标换算：鼠标 clientX -> **内容坐标**。
+//
+// 片段/音符/音频片段都是按内容坐标画的（画的时候统一减了 state.scrollX），所以凡是
+// "从鼠标位置反推 tick、或跟画出来的片段比坐标"的地方，都必须先加回横向滚动量。
+// 漏加的表现：横向滚动后点标尺定位偏左（偏多少 = 滚动量），越往右滚偏得越多；
+// 缩放后内容宽过视口就会有滚动量，所以看着像"只在某个缩放下出问题"。
+//
+// 反例：音频区标题条、轨道头、轨道头上的色卡是**钉在视口里**的（x 不随滚动变），
+// 那些命中判定保持视口坐标，不要用这个函数。
+function contentX(clientX) {
+  return clientX - el.canvas.getBoundingClientRect().left + state.scrollX;
+}
+
 // resched=false 用于"别的声音也别跳"的小幅校准（窗口联动的位置纠偏）
 function seekToTick(tick, resched = true) {
   state.playheadTick = Math.max(0, Math.min(state.view.lengthTicks, Math.round(tick)));
@@ -674,8 +687,7 @@ function audioGridTicks() {
 
 // 鼠标 x -> tick（带吸附；按住 Alt 或关掉吸附就不吸）
 function audioTickAt(clientX, bypassSnap) {
-  const rect = el.canvas.getBoundingClientRect();
-  const raw = xToTick(state.view, clientX - rect.left);
+  const raw = xToTick(state.view, contentX(clientX));
   const tick = (state.audioSnap && !bypassSnap) ? audioSnapTick(raw, audioGridTicks()) : raw;
   return Math.max(0, Math.round(tick));
 }
@@ -921,8 +933,7 @@ function startAudioDrag(hit, e) {
   const lane = state.audioLanes[hit.lane];
   const clip = lane && lane.clips[hit.clip];
   if (!clip) return;
-  const rect = el.canvas.getBoundingClientRect();
-  const tick = xToTick(state.view, e.clientX - rect.left);
+  const tick = xToTick(state.view, contentX(e.clientX));
   audioDrag = {
     lane: hit.lane, clip: hit.clip, edge: hit.edge,
     grabTick: tick - clip.startTick,        // 抓手与片段起点的差（拖动才跟手）
@@ -940,8 +951,7 @@ function onAudioDragMove(e) {
   if (!audioDrag) return;
   const lane = state.audioLanes[audioDrag.lane];
   if (!lane || !lane.clips[audioDrag.clip]) return;
-  const rect = el.canvas.getBoundingClientRect();
-  const tick = xToTick(state.view, e.clientX - rect.left);
+  const tick = xToTick(state.view, contentX(e.clientX));
   const bypass = e.altKey;                  // 按住 Alt 临时不吸附
   const grid = audioGridTicks();
   const snapT = (t) => Math.max(0, Math.round((state.audioSnap && !bypass) ? audioSnapTick(t, grid) : t));
@@ -1233,9 +1243,10 @@ function bindUi() {
     if (x < state.view.headW) return;
     closeSwatchPop();
     // 音频片段：拖中间挪位置、拖两头改长度
-    const hit = audioClipAt(state.view, x, y, state.scrollY, state);
+    const hit = audioClipAt(state.view, x, y, state.scrollY, state.scrollX, state);
     if (hit) { e.preventDefault(); startAudioDrag(hit, e); return; }
-    seekToTick(xToTick(state.view, x));
+    // 点标尺/时间线定位播放头：x 要加成内容坐标（横向滚动后 else 会整块偏左）
+    seekToTick(xToTick(state.view, x + state.scrollX));
     sendControl('seek', { tick: state.playheadTick });   // OBS 画面同步跳到这个位置
   });
 
@@ -1244,7 +1255,7 @@ function bindUi() {
     if (state.audioDrag || !state.view || state.view.mode !== 'arrange') return;
     const rect = el.canvas.getBoundingClientRect();
     const hit = audioClipAt(state.view, e.clientX - rect.left, e.clientY - rect.top,
-                            state.scrollY, state);
+                            state.scrollY, state.scrollX, state);
     const next = hit ? { lane: hit.lane, clip: hit.clip, edge: hit.edge } : null;
     const prev = state.audioHover;
     const same = (!next && !prev) || (next && prev && next.lane === prev.lane
@@ -1266,7 +1277,7 @@ function bindUi() {
       removeAudioLane(headHit.lane);
       return;
     }
-    const clipHit = audioClipAt(state.view, x, y, state.scrollY, state);
+    const clipHit = audioClipAt(state.view, x, y, state.scrollY, state.scrollX, state);
     if (clipHit) {
       e.preventDefault();
       removeAudioClip(clipHit.lane, clipHit.clip);

@@ -278,13 +278,15 @@ function audioHeadHit(view, x, y, scrollY = 0) {
   return null;
 }
 
-// 一个音频片段的矩形（画布坐标）。右缘由"开始秒 + 取多长"反算回 tick ——
-// 播放和画法共用 web/audio.js 的那套秒数数学。
-function audioClipRect(view, lane, clip, scrollY, state) {
+// 一个音频片段的矩形（画布坐标：x 已减横向滚动量、y 已减纵向滚动量）。
+// 右缘由"开始秒 + 取多长"反算回 tick —— 播放和画法共用 web/audio.js 的那套秒数数学。
+// 注意 scrollX/scrollY 要传"画布视角已经减掉的滚动量"，和绘制那边同一个坐标系；
+// 漏传 scrollX 就会在横向滚动后抓不到片段（画在左边、判定留在原地）。
+function audioClipRect(view, lane, clip, scrollY = 0, state = null, scrollX = 0) {
   const i = (view.audioLanes || []).indexOf(lane);
   const rowY = audioLaneTop(view, i < 0 ? 0 : i) - (scrollY || 0);
-  const x0 = tickToX(view, clip.startTick);
-  const x1 = tickToX(view, audioEndTick((state && state.tempo) || null, clip));
+  const x0 = tickToX(view, clip.startTick) - (scrollX || 0);
+  const x1 = tickToX(view, audioEndTick((state && state.tempo) || null, clip)) - (scrollX || 0);
   return {
     x0,
     x1,
@@ -293,8 +295,9 @@ function audioClipRect(view, lane, clip, scrollY, state) {
   };
 }
 
-// 画布坐标 -> 命中的音频片段：{lane, clip, edge:'left'|'right'|'body'} 或 null
-function audioClipAt(view, x, y, scrollY = 0, state = null) {
+// 画布坐标 -> 命中的音频片段：{lane, clip, edge:'left'|'right'|'body'} 或 null。
+// x/y 是**画布坐标**（还没加滚动量），scrollX/scrollY 是已经减掉的滚动量 —— 函数自己加回来。
+function audioClipAt(view, x, y, scrollY = 0, scrollX = 0, state = null) {
   const li = audioLaneAt(view, x, y, scrollY);
   if (li < 0) return null;
   const lane = view.audioLanes[li];
@@ -304,7 +307,7 @@ function audioClipAt(view, x, y, scrollY = 0, state = null) {
   const cx = x;
   for (let ci = (lane.clips || []).length - 1; ci >= 0; ci--) {
     const clip = lane.clips[ci];
-    const r = audioClipRect(view, lane, clip, scrollY, state);
+    const r = audioClipRect(view, lane, clip, scrollY, state, scrollX);
     if (cx < r.x0 - 1 || cx > r.x1 + 1) continue;
     const w = Math.max(1, r.x1 - r.x0);
     const edge = Math.min(AUDIO_EDGE_W, Math.max(4, w / 3));
@@ -768,9 +771,10 @@ function drawAudioWave(ctx, rect, clip, info, color) {
 }
 
 function drawAudioClip(ctx, view, lane, clip, rowY, sx, w, c, state) {
-  const r = audioClipRect(view, lane, clip, state.scrollY, state);
-  const x0 = r.x0 - sx;
-  const x1 = r.x1 - sx;
+  // 矩形自己就带滚动量（和命中判定同一套坐标），这里别再去减 sx
+  const r = audioClipRect(view, lane, clip, state.scrollY, state, sx);
+  const x0 = r.x0;
+  const x1 = r.x1;
   if (x1 < view.headW || x0 > w) return;
 
   const hgt = r.h;
