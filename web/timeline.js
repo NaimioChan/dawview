@@ -28,6 +28,23 @@ const SWATCH_MIN_HEAD = 96;   // 轨道栏窄于此就不画色卡（放不下�
 const LANE_HEAD_H = 18;       // 钢琴窗下部每栏的标题条高度
 const LANE_MIN_H = 24;        // 单栏绘制区最小高度（再小就只剩一条线了）
 
+// 用户音频区（自己导入的音频，见 web/audio.js）：标题条 + 每轨一行。
+// 没有音频轨时标题条高度 = 0 —— 不显示音频区的工程，几何和以前一模一样。
+const AUDIO_HEAD_H = 24;
+const AUDIO_EDGE_W = 7;       // 片段左右缘的裁剪热区宽度
+const AUDIO_MIN_CLIP_W = 24;  // 窄于这个宽度就不分左右缘了（左右三分）
+const AUDIO_BTN_H = 18;
+const AUDIO_BTN_Y = 3;        // 标题条里按钮的纵向偏移
+// 标题条上的按钮：固定几何 —— 绘制和点击命中读同一份（文字宽度不参与定位，
+// 否则命中区和画出来的框会差几个像素）
+const AUDIO_BTN_IMPORT = { x: 84, w: 76 };
+const AUDIO_BTN_NEW = { x: 166, w: 76 };
+const AUDIO_BTN_SNAP = { x: 248, w: 82 };
+// 轨道头右侧的两个按钮（静音 / 删除）
+const AUDIO_MUTE_W = 22;
+const AUDIO_DEL_W = 20;
+const AUDIO_HEAD_BTN_GAP = 6;
+
 const PITCH_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
 
@@ -73,13 +90,21 @@ function makeView(project, opts) {
   const meta = project.meta || {};
   const ppq = meta.ppq || 480;
   const sig = meta.timeSig || [4, 4];
+  // 用户音频区：有音频轨才占标题条那 24px（导出的截图里不画标题条）
+  const audioLanes = (opts.audioLanes || []).slice();
+  // 音频片段可能被用户拖到工程结束之后：时间轴（画布宽度 / 标尺范围）得跟着长，
+  // 不然拖出去的那截就画在可视区之外了。
+  const audioTicksMax = audioLanes.reduce((a, lane) => Math.max(a,
+    ...(lane.clips || []).map((c) => audioEndTick(opts.tempo || null, c)), 0), 0);
   return {
     mode: 'arrange',
     ppq,
     barTicks: ppq * (sig[0] || 4),
     beatTicks: ppq,
     tracks: project.tracks || [],
-    lengthTicks: Math.max(project.lengthTicks || 0, 1),
+    audioLanes,
+    audioBarH: (audioLanes.length && !exportMode) ? AUDIO_HEAD_H : 0,
+    lengthTicks: Math.max(project.lengthTicks || 0, audioTicksMax, 1),
     pxPerTick: opts.pxPerTick,
     pitchLo: opts.pitchLo,
     pitchHi: opts.pitchHi,
@@ -162,7 +187,7 @@ function makeMidiView(project, opts) {
 function contentSize(view, widthPx) {
   const height = view.mode === 'midi'
     ? rulerH + (view.pitchHi - view.pitchLo + 1) * view.semiH + 8
-    : rulerH + view.tracks.length * view.rowH + 8;
+    : audioRowsBottom(view) + view.tracks.length * view.rowH + 8;
   return {
     width: Math.max(widthPx, view.headW + view.lengthTicks * view.pxPerTick + 40),
     height,
@@ -171,7 +196,128 @@ function contentSize(view, widthPx) {
 
 function tickToX(view, tick) { return view.headW + tick * view.pxPerTick; }
 function xToTick(view, x) { return Math.max(0, (x - view.headW) / view.pxPerTick); }
-function rowTop(view, index) { return rulerH + index * view.rowH; }
+
+/* -------------------------------------------- 用户音频区的几何（走带视图） */
+
+// 音频区标题条高度：没有音频轨时是 0（工程轨道的位置和以前一模一样）
+function audioBarH(view) {
+  return (view && view.mode === 'arrange') ? (view.audioBarH || 0) : 0;
+}
+
+// 一条音频轨的行顶（内容坐标，未减滚动量）
+function audioLaneTop(view, i) {
+  return rulerH + audioBarH(view) + i * view.rowH;
+}
+
+// 音频区底部 = 工程第一行的行顶
+function audioRowsBottom(view) {
+  return rulerH + audioBarH(view) + (view.audioLanes || []).length * view.rowH;
+}
+
+function rowTop(view, index) {
+  return audioRowsBottom(view) + index * view.rowH;
+}
+
+// 画布坐标 -> 命中哪条音频轨（整行都算，拖放定位也用这个）
+function audioLaneAt(view, x, y, scrollY = 0) {
+  if (!view || view.mode !== 'arrange') return -1;
+  const lanes = view.audioLanes || [];
+  const cy = y + (scrollY || 0);
+  for (let i = 0; i < lanes.length; i++) {
+    const top = audioLaneTop(view, i);
+    if (cy >= top && cy < top + view.rowH) return i;
+  }
+  return -1;
+}
+
+// 标题条上的三个按钮（画布坐标，已减纵向滚动量）；标题条藏起来时是 null
+function audioBarRects(view, scrollY = 0) {
+  if (!audioBarH(view)) return null;
+  const y = rulerH - (scrollY || 0) + AUDIO_BTN_Y;
+  const mk = (b) => ({ x: b.x, y, w: b.w, h: AUDIO_BTN_H });
+  return { import: mk(AUDIO_BTN_IMPORT), add: mk(AUDIO_BTN_NEW), snap: mk(AUDIO_BTN_SNAP) };
+}
+
+// 画布坐标 -> 标题条上按的是哪个按钮：'import' | 'add' | 'snap' | ''（没按到）
+function audioBarHit(view, x, y, scrollY = 0) {
+  const r = audioBarRects(view, scrollY);
+  if (!r) return '';
+  const cy = y + (scrollY || 0);
+  if (cy < rulerH || cy > rulerH + AUDIO_HEAD_H) return '';
+  for (const [key, box] of Object.entries(r)) {
+    if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) return key;
+  }
+  return '';
+}
+
+// 音频轨头右侧的 静音 / 删除 按钮（画布坐标，已减纵向滚动量）
+function audioHeadRects(view, i, scrollY = 0) {
+  if (!view || view.mode !== 'arrange' || view.headW < SWATCH_MIN_HEAD) return null;
+  const cy = audioLaneTop(view, i) - (scrollY || 0);
+  const h = Math.min(AUDIO_BTN_H, Math.max(10, view.rowH - 14));
+  const y = cy + (view.rowH - h) / 2;
+  const delX = view.headW - 10 - AUDIO_DEL_W;
+  return {
+    mute: { x: delX - AUDIO_HEAD_BTN_GAP - AUDIO_MUTE_W, y, w: AUDIO_MUTE_W, h },
+    del: { x: delX, y, w: AUDIO_DEL_W, h },
+  };
+}
+
+// 画布坐标 -> 音频轨头上的按钮：{lane, kind:'mute'|'del'} 或 null
+function audioHeadHit(view, x, y, scrollY = 0) {
+  const i = audioLaneAt(view, x, y, scrollY);
+  if (i < 0) return null;
+  const r = audioHeadRects(view, i, scrollY);
+  if (!r) return null;
+  for (const kind of ['mute', 'del']) {
+    const box = r[kind];
+    if (x >= box.x - 3 && x <= box.x + box.w + 3 && y >= box.y && y <= box.y + box.h) {
+      return { lane: i, kind };
+    }
+  }
+  return null;
+}
+
+// 一个音频片段的矩形（画布坐标：x 已减横向滚动量、y 已减纵向滚动量）。
+// 右缘由"开始秒 + 取多长"反算回 tick —— 播放和画法共用 web/audio.js 的那套秒数数学。
+// 注意 scrollX/scrollY 要传"画布视角已经减掉的滚动量"，和绘制那边同一个坐标系；
+// 漏传 scrollX 就会在横向滚动后抓不到片段（画在左边、判定留在原地）。
+function audioClipRect(view, lane, clip, scrollY = 0, state = null, scrollX = 0) {
+  const i = (view.audioLanes || []).indexOf(lane);
+  const rowY = audioLaneTop(view, i < 0 ? 0 : i) - (scrollY || 0);
+  const x0 = tickToX(view, clip.startTick) - (scrollX || 0);
+  const x1 = tickToX(view, audioEndTick((state && state.tempo) || null, clip)) - (scrollX || 0);
+  return {
+    x0,
+    x1,
+    y: rowY + CLIP_PAD,
+    h: Math.max(6, view.rowH - CLIP_PAD * 2 - 1),
+  };
+}
+
+// 画布坐标 -> 命中的音频片段：{lane, clip, edge:'left'|'right'|'body'} 或 null。
+// x/y 是**画布坐标**（还没加滚动量），scrollX/scrollY 是已经减掉的滚动量 —— 函数自己加回来。
+function audioClipAt(view, x, y, scrollY = 0, scrollX = 0, state = null) {
+  const li = audioLaneAt(view, x, y, scrollY);
+  if (li < 0) return null;
+  const lane = view.audioLanes[li];
+  const cy = y + (scrollY || 0);
+  const rowTopY = audioLaneTop(view, li);
+  if (cy < rowTopY + CLIP_PAD - 2 || cy > rowTopY + view.rowH - CLIP_PAD + 2) return null;
+  const cx = x;
+  for (let ci = (lane.clips || []).length - 1; ci >= 0; ci--) {
+    const clip = lane.clips[ci];
+    const r = audioClipRect(view, lane, clip, scrollY, state, scrollX);
+    if (cx < r.x0 - 1 || cx > r.x1 + 1) continue;
+    const w = Math.max(1, r.x1 - r.x0);
+    const edge = Math.min(AUDIO_EDGE_W, Math.max(4, w / 3));
+    if (cx - r.x0 <= edge) return { lane: li, clip: ci, edge: 'left' };
+    if (r.x1 - cx <= edge) return { lane: li, clip: ci, edge: 'right' };
+    return { lane: li, clip: ci, edge: 'body' };
+  }
+  return null;
+}
+
 
 /* ---------------------------------------------------------- 轨道颜色 */
 
@@ -278,6 +424,7 @@ function draw(canvas, view, state) {
 
   const headW = view.headW;
   const rowH = view.rowH;
+  const audioLanes = view.audioLanes || [];
 
   // 轨道行底色（含行分隔）
   for (let i = 0; i < view.tracks.length; i++) {
@@ -286,6 +433,28 @@ function draw(canvas, view, state) {
     ctx.fillStyle = i % 2 ? c.panel : c.bg;
     ctx.fillRect(0, y, w, rowH);
     if (!exportMode) {               // 行分隔线也算"背景格线"
+      ctx.fillStyle = c.border;
+      ctx.fillRect(0, y + rowH - 1, w, 1);
+    }
+  }
+
+  // 用户音频区（自己导入的音频）：标题条 + 每轨一行。没有音频轨就整块不存在 ——
+  // 也就不会把工程轨道整体往下挤。
+  if (audioLanes.length && audioBarH(view)) {
+    const by = rulerH - sy;
+    if (by + AUDIO_HEAD_H > rulerH && by < h) {
+      ctx.fillStyle = c.panel;
+      ctx.fillRect(0, by, w, AUDIO_HEAD_H);
+      ctx.fillStyle = c.border;
+      ctx.fillRect(0, by + AUDIO_HEAD_H - 1, w, 1);
+    }
+  }
+  for (let i = 0; i < audioLanes.length; i++) {
+    const y = audioLaneTop(view, i) - sy;
+    if (y > h || y + rowH < rulerH) continue;
+    ctx.fillStyle = i % 2 ? c.panel : c.bg;
+    ctx.fillRect(0, y, w, rowH);
+    if (!exportMode) {
       ctx.fillStyle = c.border;
       ctx.fillRect(0, y + rowH - 1, w, 1);
     }
@@ -310,6 +479,15 @@ function draw(canvas, view, state) {
     }
   }
 
+  // 用户音频片段
+  for (let i = 0; i < audioLanes.length; i++) {
+    const y = audioLaneTop(view, i) - sy;
+    if (y > h || y + rowH < rulerH) continue;
+    for (const clip of audioLanes[i].clips || []) {
+      drawAudioClip(ctx, view, audioLanes[i], clip, y, sx, w, c, state);
+    }
+  }
+
   // 轨道名栏（钉在左侧，覆盖片段与网格）；干净模式下 headW=0 即整块不画
   if (headW > 0) {
     ctx.fillStyle = c.panel;
@@ -322,7 +500,28 @@ function draw(canvas, view, state) {
       drawTrackHead(ctx, view.tracks[i], y, c, headW, rowH,
                     trackHex(state, view, i), trackSwatchRect(view, i, sy));
     }
+    for (let i = 0; i < audioLanes.length; i++) {
+      const y = audioLaneTop(view, i) - sy;
+      if (y > h || y + rowH < rulerH) continue;
+      drawAudioHead(ctx, audioLanes[i], y, c, headW, rowH,
+                    audioHeadRects(view, i, sy), audioLanes[i].muted);
+    }
+  } else {
+    // 干净模式没有轨道头，静音状态就靠行左缘那根色条表示
+    ctx.fillStyle = c.audio;
+    for (let i = 0; i < audioLanes.length; i++) {
+      if (audioLanes[i].muted) continue;
+      const y = audioLaneTop(view, i) - sy;
+      if (y > h || y + rowH < rulerH) continue;
+      ctx.fillRect(0, y, 3, rowH - 1);
+    }
   }
+
+  // 音频区标题条上的文字与按钮（压在轨道头之上，跟着内容滚）
+  if (audioLanes.length && audioBarH(view)) {
+    drawAudioBar(ctx, view, state, c, w, sy, headW);
+  }
+  drawAudioDropMark(ctx, view, state, c, h);
   ctx.restore();
 
   // 标尺左上角那格（它本来就在标尺里，画在裁剪之外）
@@ -477,6 +676,215 @@ function drawClip(ctx, view, clip, rowY, sx, w, c, state, ti, hits, fx) {
     ctx.globalAlpha = 1;
   }
 }
+
+/* ------------------------------------------------------ 用户音频轨（走带） */
+
+const AUDIO_FONT = '12px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+const AUDIO_FONT_SMALL = '10px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+
+// 一个小的胶囊按钮（标题条上的那些）：框由 audioBarRects 给，这里只管画
+function drawAudioChip(ctx, box, label, c, on) {
+  roundRectPath(ctx, box.x, box.y, box.w, box.h, 4);
+  ctx.fillStyle = on ? c.accent : c.bg;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = on ? c.accent : c.border;
+  ctx.stroke();
+  ctx.fillStyle = on ? c.bg : c.text;
+  ctx.textAlign = 'center';
+  ctx.fillText(label, box.x + box.w / 2, box.y + box.h / 2 + 0.5);
+  ctx.textAlign = 'left';
+}
+
+// 音频区标题条：左边一句统计，右边三个按钮（导入 / 加一轨 / 吸附）
+function drawAudioBar(ctx, view, state, c, w, sy, headW) {
+  const boxes = audioBarRects(view, sy);
+  if (!boxes) return;
+  const lanes = view.audioLanes || [];
+  const clips = lanes.reduce((a, l) => a + (l.clips || []).length, 0);
+  const y = rulerH - sy;
+
+  ctx.font = AUDIO_FONT_SMALL;
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = c.audio;
+  ctx.fillRect(0, y, 3, AUDIO_HEAD_H - 1);
+  ctx.fillStyle = c.text;
+  ctx.fillText(`音频轨 ${lanes.length} 条 · ${clips} 段`, 12, y + AUDIO_HEAD_H / 2);
+
+  drawAudioChip(ctx, boxes.import, '导入音频', c, false);
+  drawAudioChip(ctx, boxes.add, '加一轨', c, false);
+  drawAudioChip(ctx, boxes.snap, state.audioSnap ? '吸附 开' : '吸附 关', c, !!state.audioSnap);
+  if (state.audioSaving) {
+    const last = boxes.snap.x + boxes.snap.w;
+    ctx.fillStyle = c.muted;
+    ctx.fillText('保存中…', last + 10, y + AUDIO_HEAD_H / 2);
+  }
+
+  const hint = state.audioAvailable ? '拖音频文件进来 或 点「导入音频」' : '音频轨要连本地服务才有';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = c.muted;
+  ctx.fillText(hint, w - 12, y + AUDIO_HEAD_H / 2);
+  ctx.textAlign = 'left';
+}
+
+// 音频轨的轨道头：色条 + 名字 + 段数 + 静音 / 删除按钮
+function drawAudioHead(ctx, lane, y, c, headW, rowH, rects, muted) {
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = muted ? c.muted : c.audio;
+  ctx.fillRect(0, y + 8, 3, Math.max(6, rowH - 17));
+  ctx.font = AUDIO_FONT;
+  ctx.fillStyle = muted ? c.muted : c.text;
+  const nameMax = headW - (rects ? 12 + rects.mute.w + AUDIO_HEAD_BTN_GAP + rects.del.w + 14 : 76);
+  ctx.fillText(clipText(ctx, lane.name || '音频轨', Math.max(40, nameMax)), 12, y + rowH / 2 - 5);
+  ctx.font = AUDIO_FONT_SMALL;
+  ctx.fillStyle = c.muted;
+  const n = (lane.clips || []).length;
+  ctx.fillText(`${n} 段${muted ? ' · 已静音' : ''}`, 12, y + rowH / 2 + 11);
+
+  if (rects) {
+    drawAudioChip(ctx, rects.mute, 'M', c, !!muted);
+    drawAudioChip(ctx, rects.del, '×', c, false);
+  }
+}
+
+// 波形：按可见像素列从峰值桶里取 min/max 画竖线（一列扫原始样本会卡）
+function drawAudioWave(ctx, rect, clip, info, color) {
+  const peaks = info.peaks;
+  const dur = info.durSec || 1;
+  const f0 = clip.srcOffsetSec / dur;
+  const f1 = (clip.srcOffsetSec + clip.lengthSec) / dur;
+  const mid = rect.y + rect.h / 2;
+  const amp = Math.max(2, rect.h / 2 - 3);
+  const span = Math.max(1, rect.x1 - rect.x0);
+  ctx.fillStyle = color;
+  for (let px = rect.left; px < rect.right; px++) {
+    const a = f0 + (f1 - f0) * ((px - rect.x0) / span);
+    const b = f0 + (f1 - f0) * ((px + 1 - rect.x0) / span);
+    const [lo, hi] = peakRange(peaks, Math.min(a, b), Math.max(a, b));
+    const top = mid - hi * amp;
+    const bottom = mid - lo * amp;
+    ctx.fillRect(px, top, 1, Math.max(1, bottom - top));
+  }
+  // 零线：安静段也读得出来"这里有内容"
+  ctx.fillStyle = hexA(color, 0.5);
+  ctx.fillRect(rect.left, Math.round(mid), Math.max(0, rect.right - rect.left), 1);
+}
+
+function drawAudioClip(ctx, view, lane, clip, rowY, sx, w, c, state) {
+  // 矩形自己就带滚动量（和命中判定同一套坐标），这里别再去减 sx
+  const r = audioClipRect(view, lane, clip, state.scrollY, state, sx);
+  const x0 = r.x0;
+  const x1 = r.x1;
+  if (x1 < view.headW || x0 > w) return;
+
+  const hgt = r.h;
+  const y = rowY + CLIP_PAD;
+  const left = Math.max(x0, view.headW - 1);
+  const right = Math.min(x1, w);
+  const base = c.audio;
+  const muted = !!lane.muted;
+  const info = (typeof audioEngine !== 'undefined') ? audioEngine.info(clip.file) : null;
+  const err = (typeof audioEngine !== 'undefined') ? audioEngine.error(clip.file) : '';
+  const drag = state.audioDrag;
+  const li = view.audioLanes.indexOf(lane);
+  const active = !!(drag && drag.lane === li && drag.clip === (lane.clips || []).indexOf(clip));
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(left, y, Math.max(1, right - left), hgt);
+  ctx.clip();
+
+  ctx.globalAlpha = muted ? 0.10 : (active ? 0.42 : 0.28);
+  ctx.fillStyle = base;
+  ctx.fillRect(x0, y, Math.max(1, x1 - x0), hgt);
+  ctx.globalAlpha = 1;
+
+  const wave = { x0, x1, y, h: hgt, left, right };
+  if (info && !muted) {
+    drawAudioWave(ctx, wave, clip, info, mixHex(base, c.text, 0.3));
+  } else if (err) {
+    // 文件读不到（工程目录被挪走 / 手工删了 media）：画斜纹，别画假波形
+    ctx.strokeStyle = c.muted;
+    ctx.lineWidth = 1;
+    for (let px = left - hgt; px < right; px += 9) {
+      ctx.beginPath();
+      ctx.moveTo(px, y + hgt);
+      ctx.lineTo(px + hgt, y);
+      ctx.stroke();
+    }
+  } else if (!muted) {
+    ctx.fillStyle = c.muted;
+    ctx.font = AUDIO_FONT_SMALL;
+    ctx.textBaseline = 'middle';
+    if (right - left > 60) ctx.fillText('载入波形…', left + 6, y + hgt / 2 + 1);
+  }
+
+  // 边框：拖动中的片段加粗提亮
+  ctx.strokeStyle = muted ? c.muted : (active ? mixHex(base, c.text, 0.45) : base);
+  ctx.lineWidth = active ? 2 : 1.5;
+  ctx.strokeRect(Math.round(x0) + 0.5, y + 0.5, Math.max(1, x1 - x0 - 1), hgt - 1);
+
+  // 裁剪手柄：鼠标悬在片段上（或正在拖它）才画，免得平时一堆竖条
+  const hover = state.audioHover;
+  const hov = !!(hover && hover.lane === li && hover.clip === (lane.clips || []).indexOf(clip));
+  if ((hov || active) && !muted) {
+    ctx.fillStyle = hexA(mixHex(base, c.text, 0.6), active ? 0.9 : 0.55);
+    ctx.fillRect(x0, y + 1, 2, hgt - 2);
+    ctx.fillRect(x1 - 2, y + 1, 2, hgt - 2);
+  }
+  ctx.restore();
+
+  // 名字 + 时长（压在片段上）
+  if (right - left > 34 && hgt > 18) {
+    ctx.font = AUDIO_FONT_SMALL;
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = muted ? c.muted : c.text;
+    ctx.globalAlpha = 0.92;
+    const len = `${clip.lengthSec.toFixed(2)}s`;
+    const label = `${clipText(ctx, clip.name || '', Math.max(20, right - left - 46))} · ${len}`;
+    ctx.fillText(label, left + 4, y + 10);
+    ctx.globalAlpha = 1;
+  }
+
+  // 拖动时的读数：精确对齐全靠它（秒 + 小节.拍）
+  if (active && drag && drag.readout) {
+    ctx.font = AUDIO_FONT_SMALL;
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(drag.readout).width + 12;
+    const bx = Math.max(view.headW + 2, Math.min(w - tw - 2, (x0 + x1) / 2 - tw / 2));
+    const by = y + hgt + 3;
+    ctx.fillStyle = c.panel;
+    roundRectPath(ctx, bx, by, tw, 16, 4);
+    ctx.fill();
+    ctx.strokeStyle = c.accent;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.fillStyle = c.text;
+    ctx.fillText(drag.readout, bx + 6, by + 8);
+  }
+}
+
+// 拖放定位线：文件拖到画布上时，标出"松手会放在哪个位置"
+function drawAudioDropMark(ctx, view, state, c, h) {
+  const drop = state.audioDrop;
+  if (!drop || !(view.audioLanes || []).length) return;
+  const x = Math.round(tickToX(view, drop.tick) - state.scrollX) + 0.5;
+  if (x < view.headW || x > 100000) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(view.headW, rulerH, Math.max(0, 4000), h - rulerH);
+  ctx.clip();
+  ctx.strokeStyle = c.accent;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x, audioLaneTop(view, 0));
+  ctx.lineTo(x, audioRowsBottom(view) + Math.min(view.tracks.length, 6) * view.rowH);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
 
 // 网格（小节/拍线）+ 顶部标尺：走带与钢琴窗共用
 function drawGridAndRuler(ctx, view, sx, w, h, c, headW) {
@@ -858,5 +1266,9 @@ if (typeof module !== 'undefined') {
     trackHex, trackSwatchRect, hitTrackSwatch, SWATCH_W, SWATCH_H, clipKindHex,
     laneLayout, laneLabelText, LANE_HEAD_H, LANE_MIN_H,
     setCanvasExportMode, getRulerH,
+    // 用户音频区（走带视图）
+    audioBarH, audioLaneTop, audioRowsBottom, audioLaneAt, audioBarRects, audioBarHit,
+    audioHeadRects, audioHeadHit, audioClipRect, audioClipAt,
+    AUDIO_HEAD_H, AUDIO_EDGE_W,
   };
 }

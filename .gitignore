@@ -21,6 +21,9 @@ scripts/fixture-project*.json
 web/prefs.json
 web/prefs.json.tmp
 
+# 用户音频轨的数据与素材（存在工程文件旁边，跟着工程走）
+.dawview/
+
 # run.bat 的本地默认工程路径（每台机器不一样）
 default-project.txt
 

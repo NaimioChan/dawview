@@ -19,6 +19,10 @@
 
     <div class="proj" id="proj-info">正在载入…</div>
 
+    <!-- 用户音频轨：导入音频（也可以直接把文件拖到画布上） -->
+    <button id="btn-audio" title="导入音频文件（快捷键 I）—— 也可以直接把文件拖进来">＋ 音频</button>
+    <input type="file" id="audio-file" accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.opus,.aif,.aiff,.webm" multiple hidden>
+
     <div class="spacer"></div>
 
     <div class="zoom">
@@ -88,6 +92,14 @@
 
   <div class="toast" id="toast" hidden></div>
 
+  <!-- 把音频文件拖到窗口里时压在最上面的提示（松手导进音频轨） -->
+  <div class="drop-hint" id="drop-hint" hidden>
+    <div class="drop-card">
+      <b>松手导入音频</b>
+      <span>拖到空的音频区 = 新建一条音频轨；拖到某条音频轨上 = 放进那一条</span>
+    </div>
+  </div>
+
   <div class="empty" id="empty" hidden>
     <h1>没有可显示的数据</h1>
     <p id="empty-msg"></p>
@@ -95,6 +107,7 @@
 
   <script src="theme.js"></script>
   <script src="timeline.js"></script>
+  <script src="audio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

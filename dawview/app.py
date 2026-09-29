@@ -24,6 +24,7 @@ from pathlib import Path
 # 固定服务端口：见 run() 里的说明（localStorage 按端口隔离）
 DEFAULT_PORT = 8973
 
+from .audiolanes import AUDIO_EXTS, audio_dir_for
 from .bwproject_parser import parse_bwproject
 from .cpr_parser import parse_cpr
 from .flp_parser import parse_flp
@@ -85,7 +86,7 @@ def prefs_target(prefs: str | None) -> Path | None:
 def run(path: str | Path, *, width: int = 1280, height: int = 800,
         dev: bool = False, port: int | None = None,
         keep_open: bool = False, no_window: bool = False,
-        prefs: str | None = None) -> int:
+        prefs: str | None = None, audio_dir: str | None = None) -> int:
     """解析工程并起本地服务 + 打开窗口。dev=True 时只写快照，不起服务。"""
     try:
         payload = parse_any(path)
@@ -103,6 +104,8 @@ def run(path: str | Path, *, width: int = 1280, height: int = 800,
           f"| {meta['bpm']} BPM {meta['timeSig'][0]}/{meta['timeSig'][1]} "
           f"| 轨道 {n_tracks} 片段 {n_clips} 音符 {n_notes}")
 
+    # 用户音频轨存哪：默认工程文件旁边的 .dawview/（跟着工程走）
+    store_dir = audio_dir_for(path, audio_dir)
     if dev:
         print(f"[dawview] 快照已写入 {WEB_DIR / 'project.json'}（dev 模式，未起服务）")
         return 0
@@ -119,18 +122,22 @@ def run(path: str | Path, *, width: int = 1280, height: int = 800,
 
     try:
         server = LocalServer(payload, WEB_DIR, port=want,
-                             prefs_path=prefs_target(prefs))
+                             prefs_path=prefs_target(prefs), audio_dir=store_dir)
     except OSError as exc:
         print(f"[dawview] 端口 {want} 用不了（{exc.strerror or exc}），换随机端口。\n"
               "          注意：换端口后浏览器里的设置（主题 / 配色 / 缩放）读不回来，"
               "OBS 浏览器源也要改成下面这个新地址。", file=sys.stderr)
         server = LocalServer(payload, WEB_DIR, port=0,
-                             prefs_path=prefs_target(prefs))
+                             prefs_path=prefs_target(prefs), audio_dir=store_dir)
     server.start()
     url = server.url
     # flush：stdout 走管道时是块缓冲的，别人（脚本 / OBS 的启动器）要立刻看到地址
     print(f"[dawview] 服务已启动：{url}", flush=True)
     print(f"[dawview] OBS 浏览器源填这个地址（外观 / 操作都跟着 app 窗口走）：{url}", flush=True)
+    print(f"[dawview] 音频轨（自己导入的音频）存在：{store_dir}")
+    if server.audio is not None and not server.audio.writable:
+        print("[dawview] 这个目录写不进去：音频轨只在本窗口里有效，关掉就没了",
+              file=sys.stderr)
 
     # 窗口开带 ?role=host 的地址：它是"主窗口"，设置以它为准，并把自己那份推给服务端
     if no_window:
@@ -212,7 +219,8 @@ def _find_browser_folder() -> str | None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="dawview",
-        description="把 Cubase .cpr / FL Studio .flp / REAPER .rpp 工程解析成可滚动浏览的走带视图")
+        description="把 Cubase .cpr / FL Studio .flp / REAPER .rpp 工程解析成可滚动浏览的走带视图"
+                    "（还能自己拖音频进来对拍：" + " ".join(sorted(AUDIO_EXTS)) + "）")
     ap.add_argument("project", help="工程文件路径，例如 26.9.6 lulabi.cpr")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
@@ -227,11 +235,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prefs", default=None, metavar="PATH",
                     help="外观设置（主题 / 显示选项 / 轨道配色）的落盘位置，"
                          "默认 web/prefs.json；传 none 就只在内存里同步")
+    ap.add_argument("--audio-dir", default=None, metavar="PATH",
+                    help="用户音频轨（自己导入的音频 + 数据）存哪儿，"
+                         "默认工程文件旁边的 .dawview/")
     args = ap.parse_args(argv)
     try:
         return run(args.project, width=args.width, height=args.height, dev=args.dev,
                    port=args.port, keep_open=args.keep_open, no_window=args.no_window,
-                   prefs=args.prefs)
+                   prefs=args.prefs, audio_dir=args.audio_dir)
     except KeyboardInterrupt:
         print("\n[dawview] 收到中断，退出")
         return 0

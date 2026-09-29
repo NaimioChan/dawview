@@ -1,18 +1,22 @@
 """dawview 的本地 HTTP 服务层 —— 纯标准库，不依赖 webui2。
 
-六个职责：
+八个职责：
 
 1. 把 `web/` 下的静态文件发给浏览器（只绑 127.0.0.1，局域网看不到）
 2. `/project.json` —— 直接从内存返回解析好的契约 JSON（不读盘，不会读到陈旧文件）
 3. `/health`       —— 存活探针，返回当前连着的页面数（给外部工具和测试用）
 4. `/events`       —— SSE 长连接。两件事：判断"窗口还在不在"（关窗即退出靠它），
-                      以及把事件推给页面（设置同步 / 控制中继，即下面两条）
+                      以及把事件推给页面（设置同步 / 控制中继 / 音频轨同步）
 5. `/prefs`        —— 页面外观设置的共享副本（主题 / 显示选项 / 轨道配色）。
                       OBS 浏览器源和 app 窗口不是同一个浏览器实例，localStorage
                       按实例隔离，所以只能靠服务端这份中转。
 6. `/control`      —— 控制中继：一个窗口里的操作（播放 / 定位 / 缩放 / 视图切换…）
                       广播给其它窗口执行，于是"在 app 窗口里操作，OBS 画面跟着走"，
                       OBS 那边不用开 Interact 抢焦点。
+7. `/audiolanes.json` + `/audiolanes` —— 用户自己导入的音频轨（可读写，工程旁边
+                      的 `.dawview/`，见 dawview/audiolanes.py）。它不属于只读的
+                      工程契约，所以单开一条通道；存完也广播给其它窗口。
+8. `/media/<名字>` —— 那份音频文件本体，支持 Range（拖动定位时浏览器能只取一段）。
 
 为什么用 SSE 而不是"页面定时打心跳"：后台标签页和 OBS 浏览器源里的
 `setInterval` 会被浏览器节流（可以慢到一分钟一次），心跳法会把"还在用"
@@ -20,7 +24,8 @@
 服务端立刻知道；连接期间由服务端定时写一行注释保活（也顺便探活）。
 
 另一个好处是缓存头由自己控制：以前用 `python -m http.server` 调试时，
-启发式缓存会把改过的 `project.json` 缓存住，这里统一 `no-store`。
+启发式缓存会把改过的 `project.json` 缓存住，这里统一 `no-store`
+（音频文件除外：文件名里带内容哈希，可以放心长缓存）。
 """
 from __future__ import annotations
 
@@ -31,15 +36,34 @@ import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
+
+from .audiolanes import MAX_MEDIA_BYTES, AudioLaneStore
 
 # 每次响应的缓存头：本地工具没有"缓存"的必要，改了就该看到
 NO_STORE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
+
+# 音频文件是**按内容命名**的（`<sha1 前 8 位>-<名字>`），同名必然同内容 ——
+# 所以可以放心让浏览器长期缓存：几 MB 的 wav 每次刷新都重下才是真的难受。
+IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+# 按扩展名给 Content-Type（浏览器 <audio> / fetch 都认）
+MEDIA_TYPES = {
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".wave": "audio/wav",
+    ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg",
+    ".flac": "audio/flac", ".m4a": "audio/mp4", ".aac": "audio/aac",
+    ".aif": "audio/aiff", ".aiff": "audio/aiff", ".weba": "audio/webm",
+}
+
+# 媒体流的分块大小（读 / 写都按它走，几百 MB 的文件不整份进内存）
+CHUNK = 1 << 20
 
 # SSE 保活间隔。顺带决定"关窗后多久被发现"：写入失败即视为断开，
 # 所以这个值同时也是断开检测的粒度。
 PING_EVERY = 1.0
 
 # POST 请求体上限：/prefs 与 /control 都是小对象，给个闸门免得畸形请求吃内存
+# （/media 走流式落盘，不吃内存，另有 MAX_MEDIA_BYTES 管着）
 MAX_POST_BYTES = 256 * 1024
 
 # 单个页面的事件积压上限：对端读得慢就丢事件（这些都是"当前状态"类消息，
@@ -61,6 +85,7 @@ CONTROL_ACTIONS = frozenset({
     "setfollow",                                          # {mode: 'page'|'center'}
     "setspeed", "setfx", "setlanes",                      # 速度 / 动效 / 控制器栏
     "track", "trackall", "sethidden",                     # 轨道显示隐藏
+    "setaudiosnap", "setaudioplay", "setaudioshow",        # 音频区显示偏好（数据不走这条）
 })
 
 
@@ -75,6 +100,30 @@ class _BadRequest(Exception):
 def sse_chunk(event: str, data) -> bytes:
     """拼一条 SSE 事件。data 走 json.dumps：换行会被转义，不会破坏帧格式。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def _parse_range(header: str, size: int) -> tuple[int, int] | None:
+    """解析 `Range: bytes=a-b`，返回 (起, 止) 闭区间；不认识 / 越界就 None（回 416）。
+
+    只认单段范围（浏览器要也就这一种）；`bytes=-500` 是"最后 500 字节"。
+    """
+    if not header.startswith("bytes=") or size <= 0:
+        return None
+    spec = header[len("bytes="):].split(",")[0].strip()
+    first, _, last = spec.partition("-")
+    try:
+        if not first:                       # bytes=-500：最后 N 字节
+            n = int(last)
+            if n <= 0:
+                return None
+            return max(0, size - n), size - 1
+        start = int(first)
+        end = int(last) if last else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size or end < start:
+        return None
+    return start, min(end, size - 1)
 
 
 
@@ -201,7 +250,8 @@ class PrefsStore:
 
 
 def make_handler(payload: dict, web_dir: Path, tracker: ClientTracker,
-                 prefs: PrefsStore, *, quiet: bool = True):
+                 prefs: PrefsStore, audio: AudioLaneStore | None = None,
+                 *, quiet: bool = True):
     """造一个请求处理器类（payload / prefs 闭包进来，JSON 只序列化一次）。"""
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
@@ -270,6 +320,11 @@ def make_handler(payload: dict, web_dir: Path, tracker: ClientTracker,
                 return self._json({"ok": True, "clients": tracker.clients})
             if path == "/prefs":
                 return self._json(prefs.snapshot())
+            if path == "/audiolanes.json":
+                return self._json(audio.snapshot() if audio
+                                  else {"version": 0, "lanes": [], "dir": "", "writable": False})
+            if path.startswith("/media/"):
+                return self._get_media(path[len("/media/"):])
             if path == "/events":
                 return self._events()
             if path == "/favicon.ico":
@@ -283,21 +338,125 @@ def make_handler(payload: dict, web_dir: Path, tracker: ClientTracker,
             return super().do_GET()
 
         def do_HEAD(self) -> None:             # noqa: N802
-            if self.path.split("?", 1)[0] in ("/project.json", "/api/project"):
+            path = self.path.split("?", 1)[0]
+            if path in ("/project.json", "/api/project"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 return
+            if path.startswith("/media/"):
+                return self._get_media(path[len("/media/"):], head=True)
             return super().do_HEAD()
 
+        # --------------------------------------------------------- 音频文件
+        def _get_media(self, name: str, head: bool = False) -> None:
+            """发一个导入的音频文件（支持单段 Range：浏览器拖动定位时只取一段）。
+
+            文件不存在就 404 —— 前端据此把那个片段标成"文件缺失"
+            （工程目录被挪走 / 手工删了 media 时会出现）。
+            """
+            path = audio.find_media(name) if audio else None
+            if path is None:
+                return self._error(404, f"没有这个音频文件: {name}")
+            size = path.stat().st_size
+            ctype = MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
+            start, end = 0, size - 1
+            code = 200
+            want = self.headers.get("Range")
+            if want:
+                parsed = _parse_range(want, size)
+                if parsed is None:
+                    self.send_response(416)                    # 请求的范围没有内容
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                start, end = parsed
+                code = 206
+            length = max(0, end - start + 1)
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            if code == 206:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+            for k, v in IMMUTABLE.items():
+                self.send_header(k, v)
+            self.end_headers()
+            if head:
+                return
+            try:
+                with open(path, "rb") as fh:
+                    fh.seek(start)
+                    left = length
+                    while left > 0:
+                        chunk = fh.read(min(CHUNK, left))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass                        # 浏览器中途取消（换了位置）很正常
+
         def do_POST(self) -> None:             # noqa: N802
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             if path == "/prefs":
                 return self._post_prefs()
             if path == "/control":
                 return self._post_control()
+            if path == "/audiolanes":
+                return self._post_audiolanes()
+            if path == "/media":
+                return self._post_media(query)
             return self._error(404, f"没有这个接口: {path}")
+
+        def _post_audiolanes(self) -> None:
+            """收下一份音频轨数据，落盘 + 广播给其它窗口。"""
+            if audio is None:
+                return self._error(503, "这个服务实例没有开音频轨（缺音频目录）")
+            try:
+                data = self._read_json()
+            except _BadRequest as exc:
+                return self._error(exc.code, str(exc))
+            lanes, saved = audio.save(data.get("lanes"))
+            sent = tracker.broadcast("audiolanes", {"lanes": lanes},
+                                     skip=self._skip_of(data))
+            return self._json({"ok": True, "saved": saved, "lanes": lanes,
+                               "writable": audio.writable, "sent": sent})
+
+        def _post_media(self, query: str) -> None:
+            """收一个上传的音频文件（请求体就是文件本体，流式落盘不占内存）。"""
+            if audio is None:
+                return self._error(503, "这个服务实例没有开音频轨（缺音频目录）")
+            params = parse_qs(query)
+            name = (params.get("name") or [""])[0]
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._error(400, "Content-Length 不是数字")
+            if length <= 0:
+                return self._error(411, "上传音频需要 Content-Length（<空 body>）")
+            if length > MAX_MEDIA_BYTES:
+                self.close_connection = True
+                return self._error(413, f"文件超过 {MAX_MEDIA_BYTES // (1024 * 1024)} MB")
+            try:
+                info = audio.store_media(self._read_chunks, length, name)
+            except ValueError as exc:
+                return self._error(413, str(exc))
+            except OSError as exc:
+                return self._error(500, f"写不进音频目录：{exc}")
+            return self._json({"ok": True, **info})
+
+        def _read_chunks(self, length: int):
+            """把请求体按块吐出来（上传几百 MB 的 wav 也不会整份进内存）。"""
+            left = length
+            while left > 0:
+                chunk = self.rfile.read(min(CHUNK, left))
+                if not chunk:
+                    break
+                left -= len(chunk)
+                yield chunk
 
         def _post_prefs(self) -> None:
             """收下这一份外观设置，转给其它窗口（发起者除外）。"""
@@ -381,13 +540,18 @@ class LocalServer:
     port=0 表示让系统挑一个空闲端口（测试用；被占用时 app.py 也会退到这条）。
     prefs_path 传了就把设置落盘到那里（app.py 传 web/prefs.json，已 gitignore）；
     不传就只在内存里同步（测试用，免得跑一遍测试就往仓库里写文件）。
+    audio_dir 传了才开"用户音频轨"（默认 `<工程目录>/.dawview`，见 app.py）；
+    不传时 /audiolanes.json 回一份空数据、上传接口回 503。
     """
 
     def __init__(self, payload: dict, web_dir: Path, port: int = 8973,
-                 *, prefs_path: Path | str | None = None, quiet: bool = True) -> None:
+                 *, prefs_path: Path | str | None = None,
+                 audio_dir: Path | str | None = None, quiet: bool = True) -> None:
         self.tracker = ClientTracker()
         self.prefs = PrefsStore(prefs_path)
-        handler = make_handler(payload, Path(web_dir), self.tracker, self.prefs, quiet=quiet)
+        self.audio = AudioLaneStore(audio_dir) if audio_dir is not None else None
+        handler = make_handler(payload, Path(web_dir), self.tracker, self.prefs,
+                               self.audio, quiet=quiet)
         self.httpd = _HttpServer(("127.0.0.1", port), handler)
         self.port = self.httpd.server_address[1]
         self._thread: threading.Thread | None = None
