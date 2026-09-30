@@ -24,6 +24,9 @@ const reaperFixture = resolve(here, 'fixture-project-reaper.json');
 // Bitwig 快照（.bwproject 是二进制容器 + "元素流"文档，音高存在音高轨上、
 // 音频片段归属靠启发式 —— 这一段验的就是这些真的落进了契约与前端的画法）
 const bitwigFixture = resolve(here, 'fixture-project-bitwig.json');
+// Studio One 快照（.song 是 ZIP：XML 走带 + 二进制演奏文件，位置/长度两套单位
+// 分开决定 —— 这一段验的就是这些真的落进了契约与前端的画法）
+const studioOneFixture = resolve(here, 'fixture-project-studioone.json');
 // 速度轨快照：任意"带复杂变速"的工程（.cpr/.flp 都行）。变速播放只有真·变速
 // 工程才验得出来，所以单独一段；没有这个快照就跳过，不报错。
 const tempoFixture = resolve(arg('--tempo-fixture', resolve(here, 'fixture-project-tempo.json')));
@@ -2376,10 +2379,185 @@ try {
     }
   }
 
+  // ==================== Studio One（.song）快照 ====================
+  // .song 是个 ZIP：metainfo.xml（标题/速度/采样率）+ Song/song.xml（走带 + 轨道事件）
+  // + Song/mediapool.xml（mediaID → 文件路径）+ Performances/<乐器>/<名>(n).musicx
+  // （二进制演奏文件，音符在这里）。两个坑决定了画面对不对：
+  //   (1) **位置单位跟轨道 tempoFollow 走**（0 = 秒、2 = 拍），长度单位跟事件 timeFormat
+  //       走（0 = 秒、2 = 拍）—— 两套单位分开决定，这工程的音频轨正好两类都有；
+  //   (2) **片段是窗口**：音符坐标在源演奏文件里，MusicPart 的 offset 是片段左缘，
+  //       窗口外的音符在 Studio One 里不属于该片段。
+  // 完整工程：62 轨（39 音频 + 17 乐器 + 1 MIDI + 5 总线）/ 98 个 MIDI 片段 +
+  // 1942 个音频片段 / 11530 个音符（另有 761 个落在片段内容窗口之外被丢掉）。
+  let studioOneRan = 0;
+  if (existsSync(studioOneFixture)) {
+    step(`Studio One 工程快照（${studioOneFixture.split(/[\/]/).pop()}）`);
+    copyFileSync(studioOneFixture, live);
+    await evalJs(`location.reload()`);
+    await sleep(2500);
+
+    const studioOneChecks = [
+      ['Studio One 元信息（宿主 / 7.1.0.104182 / 162 BPM / 4/4 / 48000 / ppq=480）', async () => {
+        const t = await evalJs(`(() => {
+          const m = window.dawview.state.project.meta;
+          return { text: document.getElementById('proj-info').textContent, ppq: m.ppq,
+                   host: m.host };
+        })()`);
+        return { pass: t.host === 'studioone' && /7\.1\.0\.104182/.test(t.text)
+                      && /162 BPM/.test(t.text) && /4\/4/.test(t.text)
+                      && /48000/.test(t.text) && t.ppq === 480,
+                 detail: JSON.stringify(t) };
+      }],
+
+      ['Studio One 轨道/片段/音符总数（快照裁剪后：3 乐器 + 1 MIDI + 3 音频 + 3 总线 / 1386 音符）', async () => {
+        const d = await evalJs(`(() => {
+          const s = window.dawview.state.project, tk = {}, ck = {};
+          let notes = 0;
+          for (const t of s.tracks) {
+            tk[t.kind] = (tk[t.kind] || 0) + 1;
+            for (const c of t.clips) {
+              ck[c.kind] = (ck[c.kind] || 0) + 1;
+              notes += (c.notes || []).length;
+            }
+          }
+          return { tracks: s.tracks.length, tk, ck, notes };
+        })()`);
+        // 完整工程是 62 轨 / 98 MIDI + 1942 音频 / 11530 音符；
+        // 快照按 make-fixture 的规则只留每类 3 轨、每轨最多 6 个片段
+        // （18 条 Music 轨里有 1 条没挂乐器 —— 快照里就是那条纯 MIDI 的 "Track"）
+        return { pass: d.tracks === 10 && d.tk.instrument === 3 && d.tk.midi === 1
+                      && d.tk.audio === 3 && d.tk.bus === 3
+                      && d.ck.midi === 13 && d.ck.audio === 18 && d.notes === 1386,
+                 detail: JSON.stringify(d) };
+      }],
+
+      ['Studio One 两个片段各自对上源演奏文件（音符数不多不少）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const t = (n) => s.tracks.find((x) => x.name === n) || { clips: [] };
+          return { piano: t('Pianoteq 6 (64-bit)').clips.map((c) => [c.startTick / 480,
+                                                                    c.notes.length]),
+                   m1: t('M1').clips.map((c) => [c.startTick / 480, c.lengthTick / 480,
+                                                 c.notes.length]) };
+        })()`);
+        // 演奏文件 M1(42) 有 160 个音符 / M1(43) 有 152 个 —— 片段长度 64 / 62 拍，
+        // offset ≈ 0，所以窗口里一个都不用丢
+        return { pass: JSON.stringify(r.piano) === JSON.stringify([[0, 224], [64, 224],
+                                                                    [128, 224], [576, 224]])
+                      && JSON.stringify(r.m1) === JSON.stringify([[192, 64, 160],
+                                                                  [256, 62, 152]]),
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['Studio One 力度取文件里存的值（快照 43 档；M1 那条轨 43 档 39..84）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const vs = s.tracks.flatMap((t) => t.clips.flatMap((c) => (c.notes || []).map((n) => n.velocity)));
+          const m1 = s.tracks.find((x) => x.name === 'M1').clips[0].notes.map((n) => n.velocity);
+          return { total: vs.length, levels: new Set(vs).size, m1Levels: new Set(m1).size,
+                   m1Min: Math.min(...m1), m1Max: Math.max(...m1) };
+        })()`);
+        // 曾经错在"把 quantize.velocity 加到力度上"：那样整份工程只剩 76 / 102 两档
+        return { pass: r.levels === 43 && r.m1Levels === 43 && r.m1Min === 39 && r.m1Max === 84,
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['Studio One 位置单位：不跟速度的轨（tempoFollow=0）存的是秒，落回网格上是整数拍', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const k = s.tracks.find((t) => t.name.startsWith('KSHMR Acoustic Kick'));
+          return { beats: k.clips.map((c) => c.startTick / 480) };
+        })()`);
+        // 文件里存的是 94.8148…、96.2962… 这种"秒"，× 162/60 才是拍
+        // （24 个事件 100% 落在整拍网格上）
+        return { pass: JSON.stringify(r.beats) === JSON.stringify([256, 260, 261, 264, 268, 269]),
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['Studio One 长度单位：timeFormat=0 的音频事件长度按秒算（军鼓 0.536 秒 = 695.2 tick）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const t = s.tracks.find((x) => x.name.startsWith('KSHMR Acoustic Snare'));
+          return { lens: t.clips.map((c) => Math.round(c.lengthTick * 1000) / 1000),
+                   file: t.clips[0].audioFile };
+        })()`);
+        // 0.536417… 秒 × 162/60 × 480 = 695.197 tick（六段长度都一样：同一个采样文件）
+        const want = Math.round(0.5364172335600907 * 162 / 60 * 480 * 1000) / 1000;
+        return { pass: r.lens.every((x) => x === want)
+                      && /KSHMR Acoustic Snare 13\.wav$/.test(r.file),
+                 detail: JSON.stringify({ len: want, ...r }) };
+      }],
+
+      ['Studio One 音频片段带采样路径（工程旁边的文件 + 导出的 Bounce）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          return { files: [...new Set(s.tracks.filter((t) => t.kind === 'audio')
+                              .flatMap((t) => t.clips.map((c) => c.audioFile)))] };
+        })()`);
+        return { pass: r.files.length === 4
+                      && r.files.some((f) => /KSHMR Acoustic Kick 18 - Hard\.wav$/.test(f))
+                      && r.files.some((f) => /KSHMR Acoustic Snare 13\.wav$/.test(f))
+                      && r.files.some((f) => /Bounces[\/]Mixdown\.wav$/.test(f)),
+                 detail: JSON.stringify(r.files.map((f) => f.split(/[\/]/).pop())) };
+      }],
+
+      ['钢琴窗：Studio One 的音符画出来了（快照里 1386 个，音区 38..83）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          dv.setViewMode('midi');
+          dv.state.hiddenTracks.clear();
+          dv.state.kindFilter = '';
+          dv.rebuildView();
+          dv.paint();
+          const v = dv.state.view;
+          const pitches = v.notes.map((n) => n.pitch);
+          return { n: v.notes.length, lo: dv.state.pitchLo, hi: dv.state.pitchHi,
+                   min: Math.min(...pitches), max: Math.max(...pitches) };
+        })()`);
+        return { pass: r.n === 1386 && r.min === 38 && r.max === 83 && r.lo === 36 && r.hi === 85,
+                 detail: JSON.stringify(r) };
+      }],
+    ];
+
+    for (const [name, fn] of studioOneChecks) {
+      studioOneRan++;
+      step(name);
+      try {
+        const r = await fn();
+        console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.detail ?? ''}`);
+        if (!r.pass) failed++;
+      } catch (err) {
+        console.log(`  ERROR ${err.message}`);
+        failed++;
+      }
+    }
+
+    await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.lanes = [];
+      dv.setViewMode('arrange');
+      dv.state.pxPerTick = 0.06;
+      dv.state.playheadTick = 0;
+      dv.rebuildView();
+      document.getElementById('scroll').scrollLeft = 0;
+      document.getElementById('scroll').scrollTop = 0;
+      dv.paint();
+    })()`);
+    await sleep(300);
+    await shot('shot-studioone.png');
+
+    if (existsSync(fixture)) {          // 复原固定快照
+      copyFileSync(fixture, live);
+      await evalJs(`location.reload()`);
+      await sleep(1500);
+    }
+  }
+
   const ran = (existsSync(fixture) ? checks.length : 0)
             + (existsSync(flFixture) ? flRan : 0)
             + (existsSync(reaperFixture) ? reaperRan : 0)
             + (existsSync(bitwigFixture) ? bitwigRan : 0)
+            + (existsSync(studioOneFixture) ? studioOneRan : 0)
             + (existsSync(tempoFixture) ? tempoRan : 0);
   if (ran === 0) {
     console.log('\n0 项：没有数据快照，什么都没验证。');

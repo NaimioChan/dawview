@@ -1,4 +1,4 @@
-# dawview 数据契约 (v0.5)
+# dawview 数据契约 (v0.6)
 
 > 解析器（Python 后端）与 WebUI 前端之间的唯一接口。
 > 改契约 = 改这个文件头部 changelog + 两端同步。
@@ -11,6 +11,20 @@
 > 本文件只描述"从工程文件解析出来的只读数据"。
 
 ## Changelog
+- v0.6 (2026-09-30): 支持 Studio One `.song`。`host` 加 `studioone`；ppq 480。`.song` 是 **ZIP**
+  （`metainfo.xml` + `Song/song.xml` + `Song/mediapool.xml` + `Performances/<乐器>/<名>(n).musicx`），
+  契约本身没变。两处只能实测才知道的语义写进了解析器 docstring：
+  **位置单位跟轨道 `tempoFollow` 走**（0 = 秒 / 2 = 拍），**长度单位跟事件 `timeFormat` 走**
+  （0 = 秒 / 2 = 拍）—— 两套单位分开决定，同一份工程里四种组合都有（判据：同一条轨复制出来的
+  两份位置逐条相同、一份长度按拍一份按秒；不跟速度的 15 条轨位置 ×162/60 后 100% 落在整拍网格上，
+  跟速度的轨则 0%）；**片段是窗口**，音符坐标存在源演奏文件里、`MusicPart.offset` 是片段左缘，
+  窗口外的音符在 Studio One 里不属于该片段（实测 12291 个音符里 761 个落在窗口外，连同跨界的一起裁齐）。
+  音符的 `quantize.start` / `quantize.velocity` 是**"改动前是多少"的记录，不要加到值上**
+  （文件里的 `start` / `velocity` 就是宿主显示/播放的值；判据：M1 那条轨 160 个音符的
+  `velocity + quantize.velocity` 恒等于宿主默认力度 0.6 —— 按"加上偏移"读整份工程的力度会
+  塌成 76 / 102 两档，真值 44 档）。轨道种类沿用既有枚举：有 `instrumentOut` 乐器连接的
+  Music 轨是 `instrument`，没有的是 `midi`（实测 18 条 Music 轨里 1 条是纯 MIDI 轨），
+  总线通道画成 `bus` 空行。
 - v0.5 (2026-09-28): 支持 Bitwig Studio `.bwproject`。`host` 加 `bitwig`；ppq 480（Bitwig 内部就是
   480）。`.bwproject` 是**二进制容器**（头部 + meta 块 + 元素流文档），契约本身没变 —— 位置/时长/
   力度在文件里都是“拍”，解析器乘 480 变 tick。三处要点写进了解析器 docstring：
@@ -41,7 +55,7 @@
 ```jsonc
 {
   "meta": {
-    "host": "cubase",             // cubase | fl | reaper | bitwig
+    "host": "cubase",             // cubase | fl | reaper | bitwig | studioone
     "hostVersion": "15.0.30",
     "projectName": "26.9.6 lulabi",
     "bpm": 76.0,                  // 首拍速度 = tempoMap[0][1]；tempoMap 有完整曲线
@@ -128,8 +142,9 @@
 | `.flp` | `dawview/flp_parser.py` | FL Studio 25.2.4.5242 / 24.1.1.4285 |
 | `.rpp` | `dawview/rpp_parser.py` | REAPER 7.67/win64 |
 | `.bwproject` | `dawview/bwproject_parser.py` | Bitwig Studio 5.3.13 |
+| `.song` | `dawview/song_parser.py` | Studio One 7.1.0.104182 |
 
-四种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
+五种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
 字段偏移、事件 ID、踩过的坑），本文件只管两端之间的 JSON 契约。
 
 FL 特有的几点（都会影响契约字段）：
@@ -166,6 +181,43 @@ REAPER 特有的几点（都会影响契约字段）：
   MARKER（第二行没有名字），只取第一行的起点当标记；标志位 &16（隐藏）的跳过。
 - 降级：认不出的 `<SOURCE ...>`（比如 CLICK/REX）→ `kind: "other"` + warning；
   一个 item 只取第一个 take；`LOOP 1` 但源内容比片段短时**不复制**音符（记 warning）。
+
+Studio One 特有的几点（都会影响契约字段）：
+
+- **`.song` 是个 ZIP**：`metainfo.xml`（标题 / 生成器版本 / 速度 / 采样率）+ `Song/song.xml`
+  （走带与全部轨道事件）+ `Song/mediapool.xml`（`mediaID` → 文件路径）+ `Devices/*.xml`
+  （乐器通道、混音台）+ `Performances/<乐器>/<名>(n).musicx`（**音符在二进制演奏文件里**，
+  每个 MIDI 片段一份）；`Envelopes/*.envelopex` 是自动化包络。XML 里的属性前缀 `x:` **没有**
+  `xmlns` 声明，标准解析器会报 `unbound prefix`，解析器先补一个 xmlns 再解开。
+- **位置单位跟轨道走、长度单位跟事件走**（这是本格式最大的坑）：
+  轨道 `tempoFollow="0"` = 不跟速度 → 事件的 `start` 是**秒**；`="2"` → 是**拍**。
+  事件的 `timeFormat="0"` → `length` 是**秒**；`="2"` → 是**拍**。
+  实测判据两条：① 同一条轨复制出来的两份（VOLTA / 91V 军鼓，各 155 个事件）位置数字逐条相同，
+  可一份 `timeFormat=2`、一份 `timeFormat=0` —— 说明位置单位不跟 `timeFormat` 走；
+  ② 15 条 `tempoFollow=0` 的轨，原始 `start` 落在 1/4 拍网格上的比例 ~0%、× 162/60 之后 100%
+  （整拍/十六分网格），而 `tempoFollow=2` 的轨反之 —— 两向都干净，没有含混的样本。
+- **片段是窗口**：音符坐标在源演奏文件里，`MusicPart.offset` 是**片段左缘对应的源位置**，
+  窗口 `[offset, offset+length]` 之外的音符在 Studio One 里不属于该片段（不显示不播放）；
+  跨界的那部分裁到片段边界（实测 12291 个音符里 761 个落在窗口外）。
+  MIDI 演奏文件（`.musicx`）里的音符位置/长度一律是**拍**。
+- **`quantize.start` / `quantize.velocity` 是"改动前是多少"的记录，不要加到音符的位置 / 力度上**：
+  文件里的 `start` / `velocity` 就是宿主当前显示/播放的值。判据：① 位置 —— 130 个带
+  `quantize.start` 的音符里，`start` 落在 1/4 拍网格上的 0 个，而 `start + quantize.start`
+  有 122 个，说明那批音符**曾经**在网格上、后来被挪开了，偏移记的是挪开前后的差；
+  ② 力度（决定性）—— M1 那条轨 160 个音符的 `velocity` 各不相同（117 个取值），
+  但 `velocity + quantize.velocity` **恒等于 0.6**（宿主默认画音符的力度）。
+  按"加上偏移"读，整份工程的力度会塌成 76 / 102 两档，真值是 44 档。
+- **乐器判定**：`Devices/musictrackdevice.xml` 里同名通道有 `Connection[id=instrumentOut]`
+  的是乐器轨 → `instrument`，没有的（MIDI 只往外送）是 `midi`。
+  实测 18 条 Music 轨里 17 条乐器、1 条纯 MIDI。`mediaType="Audio"` → `audio`。
+- **总线轨**：`AutomationTrack` 画成 `bus` 空行（内容全是 `.envelopex` 自动化，本期不画）。
+  `ChordTrack` / `ArrangerTrack` / `LyricsTrack` / `VideoTrack` / `MarkerTrack` 不是内容轨，跳过并记一条 warning。
+  分层轨（`layerCount`）自己没有 Events，事件在 `List[id=Layers]` 的各层里，全部收下（契约里没有分层概念）。
+- **力度**：演奏文件里是 0..1 的浮点，× 127 取整进契约。
+- **不解析**：`.envelopex` 自动化（`controllers` 恒为 `[]`）、静音片段（契约没有静音字段）、
+  `loopEnabled` 的循环展开、`speed` / `transpose` / `tune`（变速移调）—— 音频片段就是
+  "从 `startTick` 到 `startTick+lengthTick` 的块"。音频素材**不在工程文件里**，
+  解析器只给 `audioFile` 路径（工程旁边的采样文件 / 导出的 Bounce）。
 
 ## Note
 

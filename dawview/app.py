@@ -1,7 +1,7 @@
 """dawview — 把 DAW 工程文件解析成可滚动浏览的走带视图。
 
 入口：
-    python -m dawview <工程文件.cpr>
+    python -m dawview <工程文件.cpr|flp|rpp|bwproject|song>
 
 后端职责：解析工程 -> 契约字典（docs/01-data-contract.md）-> 起一个本地 HTTP
 服务（dawview/server.py，纯标准库）把 web/ 和这份 JSON 发给浏览器；同时把同一份
@@ -29,6 +29,7 @@ from .bwproject_parser import parse_bwproject
 from .cpr_parser import parse_cpr
 from .flp_parser import parse_flp
 from .rpp_parser import parse_rpp
+from .song_parser import parse_song
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -38,6 +39,7 @@ PARSERS = {
     ".cpr": parse_cpr,
     ".flp": parse_flp,
     ".rpp": parse_rpp,
+    ".song": parse_song,
 }
 
 
@@ -219,7 +221,7 @@ def _find_browser_folder() -> str | None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="dawview",
-        description="把 Cubase .cpr / FL Studio .flp / REAPER .rpp 工程解析成可滚动浏览的走带视图"
+        description="把 Cubase .cpr / FL Studio .flp / REAPER .rpp / Bitwig .bwproject / Studio One .song 工程解析成可滚动浏览的走带视图"
                     "（还能自己拖音频进来对拍：" + " ".join(sorted(AUDIO_EXTS)) + "）")
     ap.add_argument("project", help="工程文件路径，例如 26.9.6 lulabi.cpr")
     ap.add_argument("--width", type=int, default=1280)
