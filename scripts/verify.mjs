@@ -27,6 +27,9 @@ const bitwigFixture = resolve(here, 'fixture-project-bitwig.json');
 // Studio One 快照（.song 是 ZIP：XML 走带 + 二进制演奏文件，位置/长度两套单位
 // 分开决定 —— 这一段验的就是这些真的落进了契约与前端的画法）
 const studioOneFixture = resolve(here, 'fixture-project-studioone.json');
+// MIDI 快照（.mid 是标准 MIDI 文件：变长量 delta + 运行状态；没有"片段"这一层，
+// 解析器按"一条 MTrk = 一条轨、整条轨一个片段"进契约 —— 这一段验的就是这个映射）
+const midiFixture = resolve(here, 'fixture-project-midi.json');
 // 速度轨快照：任意"带复杂变速"的工程（.cpr/.flp 都行）。变速播放只有真·变速
 // 工程才验得出来，所以单独一段；没有这个快照就跳过，不报错。
 const tempoFixture = resolve(arg('--tempo-fixture', resolve(here, 'fixture-project-tempo.json')));
@@ -2553,11 +2556,179 @@ try {
     }
   }
 
+  // ==================== MIDI（.mid）快照 ====================
+  // .mid 是标准 MIDI 文件：MThd + 若干 MTrk，事件流 = "变长量 delta + 状态字节"，
+  // 状态字节可以整个省掉（运行状态，实测真文件 64% 的事件走这条路）。它**没有"片段"
+  // 这一层** —— 解析器的映射是"一条 MTrk = 一条轨道、整条轨一个片段"（起点 0、
+  // 长度到该轨内容末尾）。这份快照来自 MuseScore 导出的管弦乐
+  // （完整文件 39 条 MTrk / 5346 音符 / 216 个速度点 / 7 种 CC），
+  // 快照按 make-fixture 的规则只留前 3 条轨。
+  // 两处只有实测才知道的坑写在这里：
+  //   (1) **末尾那条超远速度点**：MuseScore 会在远超内容末尾的 tick 上再写一条速度
+  //       （内容到 264981，它写 1970304）—— 留着会把状态栏时长 3:41 撑成 33:40；
+  //   (2) 力度就是 note-on 的力度字节（不是别的换算），快照里 99 档。
+  let midiRan = 0;
+  if (existsSync(midiFixture)) {
+    step(`MIDI 快照（${midiFixture.split(/[\\/]/).pop()}）`);
+    copyFileSync(midiFixture, live);
+    await evalJs(`location.reload()`);
+    await sleep(2000);
+
+    const midiChecks = [
+      ['MIDI 元信息（宿主 midi / SMF 1 / Spring Mpnody / 136 BPM / 4/4 / 44100 / ppq=480）', async () => {
+        const t = await evalJs(`(() => {
+          const m = window.dawview.state.project.meta;
+          return { text: document.getElementById('proj-info').textContent, ppq: m.ppq,
+                   host: m.host, version: m.hostVersion };
+        })()`);
+        return { pass: t.host === 'midi' && t.version === 'SMF 1' && t.ppq === 480
+                      && /Spring Mpnody/.test(t.text) && /136 BPM/.test(t.text)
+                      && /4\/4/.test(t.text) && /44100/.test(t.text),
+                 detail: JSON.stringify(t) };
+      }],
+
+      ['MIDI 轨道映射：一条 MTrk = 一条轨 + 整轨一个片段（快照 3 轨 3 片段 2491 音符）', async () => {
+        const d = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const kinds = {};
+          let notes = 0;
+          for (const t of s.tracks) {
+            kinds[t.kind] = (kinds[t.kind] || 0) + 1;
+            for (const c of t.clips) notes += (c.notes || []).length;
+          }
+          return { tracks: s.tracks.length, kinds,
+                   spans: s.tracks.map((t) => t.clips.map((c) => [c.name === t.name,
+                                                                   c.startTick, c.lengthTick])),
+                   notes };
+        })()`);
+        const flat = d.spans.flat();
+        return { pass: d.tracks === 3 && d.kinds.midi === 3 && flat.length === 3
+                      && flat.every((s) => s[0] === true && s[1] === 0)
+                      && d.notes === 2491,
+                 detail: JSON.stringify(d) };
+      }],
+
+      ['MIDI 每轨音符数与片段长度对上（992 / 1209 / 290；264981 / 259080 / 242400 tick）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          return s.tracks.map((t) => [t.name, t.clips[0].notes.length, t.clips[0].lengthTick]);
+        })()`);
+        return { pass: JSON.stringify(r) === JSON.stringify([
+          ['PianoCloseMic', 992, 264981], ['PianoFarMic', 1209, 259080],
+          ['Violins 1', 290, 242400]]),
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['MIDI 力度取 note-on 的力度字节（快照 99 档；PianoCloseMic 87 档 7..103）', async () => {
+        const r = await evalJs(`(() => {
+          const s = window.dawview.state.project;
+          const all = s.tracks.flatMap((t) => t.clips.flatMap((c) => c.notes.map((n) => n.velocity)));
+          const first = s.tracks[0].clips[0].notes.map((n) => n.velocity);
+          return { levels: new Set(all).size, firstLevels: new Set(first).size,
+                   min: Math.min(...first), max: Math.max(...first) };
+        })()`);
+        // 塌成一两档那种读法（把别的字节当力度）会在这里露馅
+        return { pass: r.levels === 99 && r.firstLevels === 87 && r.min === 7 && r.max === 103,
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['MIDI 的 CC 进了契约（CC1 调制轮 2779 点 / CC58 17 / CC64 延音踏板 619）', async () => {
+        const r = await evalJs(`window.dawview.ccChoices().map((c) => [c.cc, c.name, c.n])`);
+        return { pass: JSON.stringify(r) === JSON.stringify([
+          [1, '调制轮', 2779], [58, 'CC58', 17], [64, '延音踏板', 619]]),
+                 detail: JSON.stringify(r) };
+      }],
+
+      ['MIDI 速度轨：214 点，末尾那条超远速度点已丢掉（状态栏时长 3:41，不是 33:40）', async () => {
+        const r = await evalJs(`(() => {
+          const p = window.dawview.state.project;
+          const ticks = p.tempoMap.map((x) => x[0]);
+          return { points: p.tempoMap.length, first: p.tempoMap[0][1], last: p.tempoMap.at(-1),
+                   maxTick: Math.max(...ticks), lengthTicks: p.lengthTicks,
+                   totalSec: window.dawview.state.tempo.totalSec,
+                   status: document.getElementById('status-text').textContent };
+        })()`);
+        // 内容到 264981 tick，MuseScore 却在 1970304 tick 又写了一条速度（120 BPM）：
+        // 留着的话 totalSec 会从 221 秒变成 2020 秒（状态栏显示 33:40）
+        // 首点 136.0 而不是 136.000145：微秒反算的尾巴按 1e-3 收敛了
+        return { pass: r.points === 214 && r.first === 136
+                      && JSON.stringify(r.last) === JSON.stringify([243840, 120])
+                      && r.maxTick <= r.lengthTicks
+                      && Math.abs(r.totalSec - 221.4394) < 0.5
+                      && /时长 3:41/.test(r.status),
+                 detail: JSON.stringify({ ...r, status: undefined }) };
+      }],
+
+      ['钢琴窗：MIDI 的音符画出来了（快照 2491 个，音区 31..98）', async () => {
+        const r = await evalJs(`(() => {
+          const dv = window.dawview;
+          dv.setViewMode('midi');
+          dv.state.hiddenTracks.clear();
+          dv.state.kindFilter = '';
+          dv.rebuildView();
+          dv.paint();
+          const v = dv.state.view;
+          const pitches = v.notes.map((n) => n.pitch);
+          return { n: v.notes.length, min: Math.min(...pitches), max: Math.max(...pitches),
+                   lo: dv.state.pitchLo, hi: dv.state.pitchHi };
+        })()`);
+        return { pass: r.n === 2491 && r.min === 31 && r.max === 98,
+                 detail: JSON.stringify(r) };
+      }],
+    ];
+
+    for (const [name, fn] of midiChecks) {
+      midiRan++;
+      step(name);
+      try {
+        const r = await fn();
+        console.log(`  ${r.pass ? 'PASS' : 'FAIL'} ${r.detail ?? ''}`);
+        if (!r.pass) failed++;
+      } catch (err) {
+        console.log(`  ERROR ${err.message}`);
+        failed++;
+      }
+    }
+
+    await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.state.lanes = [];
+      dv.setViewMode('arrange');
+      dv.state.pxPerTick = 0.05;
+      dv.state.playheadTick = 0;
+      dv.rebuildView();
+      document.getElementById('scroll').scrollLeft = 0;
+      document.getElementById('scroll').scrollTop = 0;
+      dv.paint();
+    })()`);
+    await sleep(300);
+    await shot('shot-midi.png');
+
+    // 钢琴窗也留一张（上面"5346 → 快照 2491 个音符"那条断言就是在这一屏上成立的）
+    await evalJs(`(() => {
+      const dv = window.dawview;
+      dv.setViewMode('midi');
+      dv.state.pxPerTick = 0.35;
+      dv.state.playheadTick = 0;
+      dv.rebuildView();
+      dv.paint();
+    })()`);
+    await sleep(300);
+    await shot('shot-midi-piano.png');
+
+    if (existsSync(fixture)) {          // 复原固定快照
+      copyFileSync(fixture, live);
+      await evalJs(`location.reload()`);
+      await sleep(1500);
+    }
+  }
+
   const ran = (existsSync(fixture) ? checks.length : 0)
             + (existsSync(flFixture) ? flRan : 0)
             + (existsSync(reaperFixture) ? reaperRan : 0)
             + (existsSync(bitwigFixture) ? bitwigRan : 0)
             + (existsSync(studioOneFixture) ? studioOneRan : 0)
+            + (existsSync(midiFixture) ? midiRan : 0)
             + (existsSync(tempoFixture) ? tempoRan : 0);
   if (ran === 0) {
     console.log('\n0 项：没有数据快照，什么都没验证。');

@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 rem ---- dawview launcher -------------------------------------------------
 rem Double-click to open the default project, or drag a .cpr / .flp / .rpp
-rem file onto this file to open that one.
+rem / .bwproject / .song / .mid file onto this file to open that one.
 rem Default project order: 1) default-project.txt (local, git-ignored)
 rem                        2) the bundled synthetic demo snapshot
 rem Python lookup order:   1) python-embed\python.exe   (portable package)
