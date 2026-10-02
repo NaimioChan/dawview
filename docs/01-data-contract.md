@@ -1,4 +1,4 @@
-# dawview 数据契约 (v0.6)
+# dawview 数据契约 (v0.7)
 
 > 解析器（Python 后端）与 WebUI 前端之间的唯一接口。
 > 改契约 = 改这个文件头部 changelog + 两端同步。
@@ -11,6 +11,20 @@
 > 本文件只描述"从工程文件解析出来的只读数据"。
 
 ## Changelog
+- v0.7 (2026-10-02): 支持标准 MIDI 文件 `.mid` / `.midi`（SMF 格式 0 / 1 / 2）。
+  `host` 加 `midi`；`ppq` 用文件头里的 division（SMPTE 计时的文件重标到 480 ppq）。
+  **MIDI 里没有"片段"这一层**，映射定为「一条 MTrk = 一条轨道、整条轨一个片段」
+  （起点 0、长度到该轨内容末尾）—— 和 Cubase / Studio One 导入 MIDI 的习惯一致；
+  格式 0（所有通道挤在一个块里）**按通道拆**成多条轨道。三处只能实测才知道的语义写进了
+  解析器 docstring：① **走带块不算轨道**（只有速度 / 拍号 / 轨名，或者连名字都没有的空块），
+  但**有名字没音符的空轨要保留**（实测 5 条：Euphoniums / Cimbassos / Solo Contrabass Tuba /
+  Marimba / Xylophone —— 那是"编制里有这件乐器、这一段没演奏"）；
+  ② **MuseScore 会在远超内容末尾的 tick 上再写一条速度事件**（实测内容到 264981 tick，
+  它写 1970304，同为 120 BPM），契约里没有内容的时间轴虽然不显示，但状态栏的"时长"
+  按速度轨最后一个点算 —— 留着会把 3:41 的曲子显示成 33:40，所以**内容末尾之后的速度点
+  丢掉并记 warning**；③ 力度就是 note-on 的力度字节（不需要别的换算，实测快照 99 档）。
+  `hostVersion` 放 **SMF 格式号**（`SMF 1`）—— 这种文件里没有"宿主版本"可放；
+  `sampleRate` 文件里不存，给 44100 并记 warning。契约字段本身**没有新增**。
 - v0.6 (2026-09-30): 支持 Studio One `.song`。`host` 加 `studioone`；ppq 480。`.song` 是 **ZIP**
   （`metainfo.xml` + `Song/song.xml` + `Song/mediapool.xml` + `Performances/<乐器>/<名>(n).musicx`），
   契约本身没变。两处只能实测才知道的语义写进了解析器 docstring：
@@ -55,7 +69,7 @@
 ```jsonc
 {
   "meta": {
-    "host": "cubase",             // cubase | fl | reaper | bitwig | studioone
+    "host": "cubase",             // cubase | fl | reaper | bitwig | studioone | midi
     "hostVersion": "15.0.30",
     "projectName": "26.9.6 lulabi",
     "bpm": 76.0,                  // 首拍速度 = tempoMap[0][1]；tempoMap 有完整曲线
@@ -128,10 +142,10 @@
 ```
 
 - 一个 clip 里同一个 CC 号只出现一次；没有 CC 数据的片段给 `[]`。
-- **Cubase 与 REAPER 会填，FL 恒为 `[]`**：`.cpr` 的 MIDI 事件流里带真正的 CC
+- **Cubase / REAPER / MIDI 会填，FL 与 Studio One 恒为 `[]`**：`.cpr` 的 MIDI 事件流里带真正的 CC
   （实测一份工程里 CC1 5271 点 / CC11 2715 点 / CC64 178 点）；REAPER 的 MIDI 事件流
   里带 `0xBn` 事件（一份工程实测每个 MIDI 片段末尾都有一条 CC123「全部音符关」，照收）；
-  FL 的 `.flp` 不存 CC。
+  FL 的 `.flp` 不存 CC；MIDI 的 CC 就在事件流里（`0xBn`），实测 7 种的点数见下面 MIDI 一节。
 - 力度不需要控制器：`Note.velocity` 就是力度，前端直接画柱状。
 
 ## 宿主解析器
@@ -143,8 +157,9 @@
 | `.rpp` | `dawview/rpp_parser.py` | REAPER 7.67/win64 |
 | `.bwproject` | `dawview/bwproject_parser.py` | Bitwig Studio 5.3.13 |
 | `.song` | `dawview/song_parser.py` | Studio One 7.1.0.104182 |
+| `.mid` / `.midi` | `dawview/midi_parser.py` | 标准 MIDI 文件（SMF 格式 1，实测 MuseScore 导出） |
 
-五种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
+六种格式的**线格式（wire format）笔记写在各自解析器的 docstring 里**（都是实测逆向出来的：
 字段偏移、事件 ID、踩过的坑），本文件只管两端之间的 JSON 契约。
 
 FL 特有的几点（都会影响契约字段）：
@@ -218,6 +233,33 @@ Studio One 特有的几点（都会影响契约字段）：
   `loopEnabled` 的循环展开、`speed` / `transpose` / `tune`（变速移调）—— 音频片段就是
   "从 `startTick` 到 `startTick+lengthTick` 的块"。音频素材**不在工程文件里**，
   解析器只给 `audioFile` 路径（工程旁边的采样文件 / 导出的 Bounce）。
+
+MIDI（.mid）特有的几点（都会影响契约字段）：
+
+- **一条 MTrk = 一条轨道、整条轨一个片段**：MIDI 文件里没有 part / pattern / 窗口这一层，
+  片段是被契约"逼"出来的概念 —— 起点一律 0、长度到该轨最晚的内容（音符末尾或最后一条 CC，
+  实测 33 条内容轨的长度各不相同：264981 / 259080 / 242400 …）。片段名 = 轨名。
+  格式 0（一个块里塞了全部通道）按通道拆轨，名字补成 `轨名 · 通道 N`。
+- **轨道种类一律 `midi`**：文件里没有插件信息，"有没有挂乐器"无从判断（不像 `.song` 能查
+  `instrumentOut`、`.rpp` 能查 FX 链）；音色号（`0xCn`）读得出来，但契约里没有对应字段，不出口。
+- **走带块不算轨道，有名字的空轨要保留**：只带速度 / 拍号 / 轨名（或者连名字都没有）且一个
+  通道事件都没有的块，是走带（元信息）块 → 内容并进 `tempoMap` / `timeSig`，不作为轨道；
+  反过来，**有名字但没有音符的轨保留成空行**（实测 5 条：Euphoniums / Cimbassos /
+  Solo Contrabass Tuba / Marimba / Xylophone）—— 抹掉会让人以为编制少了声部。
+- **ppq 用文件头里的 division**（实测 480），不做缩放；SMPTE 计时的文件（division 高位置 1）
+  按标称速度重标到 480 ppq，秒数是对的，只是速度曲线在那类文件里本来就不表示拍速。
+- **音符配对**：note-on ↔ note-off 按 `(通道, 音高)` 各自先入先出（同一个音高可以叠着按）；
+  力度 0 的 note-on 就是 note-off；没配到 note-off 的音符按该轨结束 tick 补齐并记 warning，
+  长度为 0 的音符按 1 tick 画。
+- **CC 进 `controllers`**：按 `(通道, CC 号)` 归组，tick 相对片段起点（本格式片段起点就是 0，
+  即绝对 tick）。实测一份 MuseScore 导出 7 种 CC：CC1 调制轮 15911 点、CC11 表情 682、
+  CC16 641、CC21 636、CC22 514、CC58 84、CC64 延音踏板 619 —— 不填 `[]` 的宿主现在有
+  Cubase / REAPER / MIDI 三家。
+- **速度轨**：`0x51` 三字节 = 每四分音符微秒数。实测 MuseScore 把渐快渐慢写成**每 240 tick
+  （八分音符）一个点的密集速度轨**（216 点），契约 v0.3 的阶梯语义天然吃这套。
+  反算出来的 BPM 按 1e-3 收敛（微秒那一格被宿主截断过：441176 微秒 = 136.000145 BPM，
+  不收敛标题栏会显示 17 位小数）；**内容末尾之后很远的速度点丢掉**（见 changelog）。
+- **不解析**：弯音 / 触后 / sysex / 静音 / 循环，速度曲线的形状（阶梯就够用）。
 
 ## Note
 

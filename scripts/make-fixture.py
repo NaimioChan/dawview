@@ -9,6 +9,7 @@
     python scripts/make-fixture.py "我的工程.bwproject" # -> scripts/fixture-project-bitwig.json
     python scripts/make-fixture.py "我的工程.rpp"      # -> scripts/fixture-project-reaper.json
     python scripts/make-fixture.py "我的工程.song"     # -> scripts/fixture-project-studioone.json
+    python scripts/make-fixture.py "我的工程.mid"      # -> scripts/fixture-project-midi.json
 
 文件名默认按扩展名定（`scripts/verify.mjs` 就按这几个名字找），要别的名字用 --out：
 
@@ -33,7 +34,9 @@ MAX_CLIPS = 6         # 每条轨道最多留几个片段
 OUT_NAME = {".cpr": "fixture-project.json", ".flp": "fixture-project-fl.json",
             ".rpp": "fixture-project-reaper.json",
             ".bwproject": "fixture-project-bitwig.json",
-            ".song": "fixture-project-studioone.json"}
+            ".song": "fixture-project-studioone.json",
+            ".mid": "fixture-project-midi.json",
+            ".midi": "fixture-project-midi.json"}
 
 
 def main() -> int:
